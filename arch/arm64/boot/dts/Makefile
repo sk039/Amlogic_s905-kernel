@@ -5,7 +5,8 @@ dtb-$(CONFIG_ARM64) += gxbb_p200.dtb gxbb_p200_2G.dtb \
 				gxl_p230_2g.dtb meson64_odroidc2.dtb \
 				gxl_p231_1g.dtb gxl_p231_2g.dtb \
 				gxbb_p200_2G_vegas95.dtb kvim.dtb \
-				gxm_q200_3g.dtb
+				gxm_q200_3g.dtb \
+				mxg_102q_g2.dtb
 
 dtb-$(CONFIG_ARCH_MESON64_ODROIDC2) += meson64_odroidc2.dtb
 
