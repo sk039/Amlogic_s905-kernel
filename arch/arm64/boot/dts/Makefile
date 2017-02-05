@@ -7,7 +7,7 @@ dtb-$(CONFIG_ARM64) += gxbb_p200.dtb gxbb_p200_2G.dtb \
 				gxbb_p200_2G_vegas95.dtb kvim.dtb \
 				gxm_q200_2g.dtb gxm_q200_3g.dtb \
 				gxm_q201_1g.dtb gxm_q201_2g.dtb \
-				vega_s96.dtb
+				vega_s96.dtb beelink_gt1_g2.dtb
 
 dtb-$(CONFIG_ARCH_MESON64_ODROIDC2) += meson64_odroidc2.dtb
 
