@@ -1,14 +1,9 @@
+dts-dirs += amlogic
 
-targets += dtbs
+subdir-y	:= $(dts-dirs)
 
-DTB_NAMES := $(subst $\",,$(CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE_NAMES))
-ifneq ($(DTB_NAMES),)
-DTB_LIST := $(addsuffix .dtb,$(DTB_NAMES))
-else
-DTB_LIST := $(dtb-y)
-endif
-targets += $(DTB_LIST)
+dtstree		:= $(srctree)/$(src)
 
-dtbs: $(addprefix $(obj)/, $(DTB_LIST))
+dtb-$(CONFIG_ARM64) := $(patsubst $(dtstree)/%.dts,%.dtb, $(foreach d,$(dts-dirs), $(wildcard $(dtstree)/$(d)/*.dts)))
 
-#clean-files := *.dtb
+always		:= $(dtb-y)
