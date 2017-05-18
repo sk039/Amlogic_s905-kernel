@@ -211,7 +211,7 @@ if grep -q '^CONFIG_MODULES=y' $KCONFIG_CONFIG ; then
 	fi
 fi
 
-if grep -q '^CONFIG_ARCH_MESON=y' $KCONFIG_CONFIG ; then
+if grep -q '^CONFIG_ARM64=y' $KCONFIG_CONFIG ; then
 	mkdir -p "$tmpdir/boot/dtb-""$version"
 	cp $objtree/arch/$SRCARCH/boot/dts/amlogic/*.dtb $dtb_dir/boot/dtb-$version
 fi
