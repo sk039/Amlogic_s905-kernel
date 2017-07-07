@@ -118,9 +118,9 @@ static inline void get_wrpage_offset(u8 type, u32 *page, u32 *page_offset)
 		do {
 			local_irq_save(flags);
 
-			page1 = READ_MPEG_REG(PARSER_AV_WRAP_COUNT) & 0xffff;
-			offset = READ_MPEG_REG(PARSER_VIDEO_WP);
-			page2 = READ_MPEG_REG(PARSER_AV_WRAP_COUNT) & 0xffff;
+			page1 = READ_PARSER_REG(PARSER_AV_WRAP_COUNT) & 0xffff;
+			offset = READ_PARSER_REG(PARSER_VIDEO_WP);
+			page2 = READ_PARSER_REG(PARSER_AV_WRAP_COUNT) & 0xffff;
 
 			local_irq_restore(flags);
 		} while (page1 != page2);
@@ -131,9 +131,9 @@ static inline void get_wrpage_offset(u8 type, u32 *page, u32 *page_offset)
 		do {
 			local_irq_save(flags);
 
-			page1 = READ_MPEG_REG(PARSER_AV_WRAP_COUNT) >> 16;
-			offset = READ_MPEG_REG(PARSER_AUDIO_WP);
-			page2 = READ_MPEG_REG(PARSER_AV_WRAP_COUNT) >> 16;
+			page1 = READ_PARSER_REG(PARSER_AV_WRAP_COUNT) >> 16;
+			offset = READ_PARSER_REG(PARSER_AUDIO_WP);
+			page2 = READ_PARSER_REG(PARSER_AV_WRAP_COUNT) >> 16;
 
 			local_irq_restore(flags);
 		} while (page1 != page2);
@@ -166,11 +166,11 @@ static inline void get_rdpage_offset(u8 type, u32 *page, u32 *page_offset)
 			local_irq_save(flags);
 
 			page1 =
-				READ_MPEG_REG(AIU_MEM_AIFIFO_BUF_WRAP_COUNT) &
+				READ_AIU_REG(AIU_MEM_AIFIFO_BUF_WRAP_COUNT) &
 				0xffff;
-			offset = READ_MPEG_REG(AIU_MEM_AIFIFO_MAN_RP);
+			offset = READ_AIU_REG(AIU_MEM_AIFIFO_MAN_RP);
 			page2 =
-				READ_MPEG_REG(AIU_MEM_AIFIFO_BUF_WRAP_COUNT) &
+				READ_AIU_REG(AIU_MEM_AIFIFO_BUF_WRAP_COUNT) &
 				0xffff;
 
 			local_irq_restore(flags);
@@ -231,9 +231,7 @@ int calculation_stream_delayed_ms(u8 type, u32 *latestbitrate,
 			outtime = timestamp_pcrscr_get();
 	if (outtime == 0 || outtime == 0xffffffff)
 		outtime = pTable->last_checkout_pts;
-	if (pTable->last_checkin_pts > outtime)
-		timestampe_delayed = (pTable->last_checkin_pts - outtime) / 90;
-
+	timestampe_delayed = (pTable->last_checkin_pts - outtime) / 90;
 	pTable->last_pts_delay_ms = timestampe_delayed;
 	if ((timestampe_delayed < 10
 		 || abs(pTable->last_pts_delay_ms - timestampe_delayed) > 3000)
@@ -255,7 +253,6 @@ int calculation_stream_delayed_ms(u8 type, u32 *latestbitrate,
 		} else
 			/* #endif */
 			diff2 = stbuf_level(get_buf_by_type(type));
-
 		/* #if MESON_CPU_TYPE >= MESON_CPU_TYPE_MESON8 */
 		if (has_hevc_vdec()) {
 			if (pTable->hevc) {
@@ -273,7 +270,7 @@ int calculation_stream_delayed_ms(u8 type, u32 *latestbitrate,
 			if (diff2 > stbuf_space(get_buf_by_type(type)))
 				diff = diff2;
 		}
-		delay_ms = (diff * 1000) / (int)(1 + pTable->last_avg_bitrate / 8);
+		delay_ms = diff * 1000 / (1 + pTable->last_avg_bitrate / 8);
 
 		if (timestampe_delayed < 10
 			|| (abs(timestampe_delayed - delay_ms) > 3 * 1000
@@ -497,9 +494,9 @@ static int pts_checkin_offset_inline(u8 type, u32 offset, u32 val, u64 uS64)
 				pr_info("init apts[%d] at 0x%x\n", type, val);
 
 			if (type == PTS_TYPE_VIDEO)
-				WRITE_MPEG_REG(VIDEO_PTS, val);
+				WRITE_PARSER_REG(VIDEO_PTS, val);
 			else if (type == PTS_TYPE_AUDIO)
-				WRITE_MPEG_REG(AUDIO_PTS, val);
+				WRITE_PARSER_REG(AUDIO_PTS, val);
 
 			pTable->status = PTS_RUNNING;
 		}
@@ -891,7 +888,6 @@ static int pts_lookup_offset_inline_locked(u8 type, u32 offset, u32 *val,
 			 * use first checkin pts instead */
 			if (!pTable->first_lookup_ok) {
 				*val = pTable->first_checkin_pts;
-				*uS64 = div64_u64((u64)pTable->first_checkin_pts * 100, 9);
 				pTable->first_lookup_ok = 1;
 				pTable->first_lookup_is_fail = 1;
 
@@ -1031,6 +1027,53 @@ int pts_set_rec_size(u8 type, u32 val)
 	}
 }
 EXPORT_SYMBOL(pts_set_rec_size);
+
+/**
+ * return number of recs if the offset is bigger
+ */
+int pts_get_rec_num(u8 type, u32 val)
+{
+	ulong flags;
+	struct pts_table_s *pTable;
+	struct pts_rec_s *p;
+	int r = 0;
+
+	if (type >= PTS_TYPE_MAX)
+		return 0;
+
+	pTable = &pts_table[type];
+
+	if (list_empty(&pTable->valid_list))
+		return 0;
+
+	spin_lock_irqsave(&lock, flags);
+
+	if (pTable->pts_search == &pTable->valid_list) {
+		p = list_entry(pTable->valid_list.next,
+			struct pts_rec_s, list);
+	} else {
+		p = list_entry(pTable->pts_search, struct pts_rec_s,
+			list);
+	}
+
+	if (OFFSET_LATER(val, p->offset)) {
+		list_for_each_entry_continue(p, &pTable->valid_list,
+					list) {
+			if (OFFSET_LATER(p->offset, val))
+				break;
+		}
+	}
+
+	list_for_each_entry_continue(p, &pTable->valid_list, list) {
+		r++;
+	}
+
+	spin_unlock_irqrestore(&lock, flags);
+
+	return r;
+}
+EXPORT_SYMBOL(pts_get_rec_num);
+
 /* #define SIMPLE_ALLOC_LIST */
 static void free_pts_list(struct pts_table_s *pTable)
 {
@@ -1137,7 +1180,7 @@ int pts_start(u8 type)
 			pTable->buf_start = READ_VREG(HEVC_STREAM_START_ADDR);
 			pTable->buf_size = READ_VREG(HEVC_STREAM_END_ADDR)
 							   - pTable->buf_start;
-			WRITE_MPEG_REG(VIDEO_PTS, 0);
+			WRITE_PARSER_REG(VIDEO_PTS, 0);
 			timestamp_pcrscr_set(0);	/* video always need
 							   the pcrscr,Clear
 							   it to use later */
@@ -1163,7 +1206,7 @@ int pts_start(u8 type)
 				 */
 				/* BUG_ON(pTable->buf_size <= 0x10000); */
 
-				WRITE_MPEG_REG(VIDEO_PTS, 0);
+				WRITE_PARSER_REG(VIDEO_PTS, 0);
 				timestamp_pcrscr_set(0);	/* video always
 								   need the
 								   pcrscr,
@@ -1176,14 +1219,14 @@ int pts_start(u8 type)
 				pTable->first_lookup_is_fail = 0;
 			} else if (type == PTS_TYPE_AUDIO) {
 				pTable->buf_start =
-					READ_MPEG_REG(AIU_MEM_AIFIFO_START_PTR);
-				pTable->buf_size = READ_MPEG_REG(
+					READ_AIU_REG(AIU_MEM_AIFIFO_START_PTR);
+				pTable->buf_size = READ_AIU_REG(
 						AIU_MEM_AIFIFO_END_PTR)
 					- pTable->buf_start + 8;
 
 				/* BUG_ON(pTable->buf_size <= 0x10000); */
 
-				WRITE_MPEG_REG(AUDIO_PTS, 0);
+				WRITE_PARSER_REG(AUDIO_PTS, 0);
 				timestamp_firstapts_set(0);
 				pTable->first_checkin_pts = -1;
 				pTable->first_lookup_ok = 0;

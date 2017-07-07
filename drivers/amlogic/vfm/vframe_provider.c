@@ -61,7 +61,8 @@ struct vframe_provider_s *vf_get_provider_by_name(const char *provider_name)
 		int namelen = strlen(provider_name);
 		for (i = 0; i < MAX_PROVIDER_NUM; i++) {
 			p = provider_table[i];
-			if (p && !strncmp(p->name, provider_name, namelen)) {
+			if (p && p->name && !strncmp(p->name,
+					provider_name, namelen)) {
 				if (strlen(p->name) == namelen
 					|| p->name[namelen] == '.')
 					break;
@@ -82,17 +83,66 @@ struct vframe_provider_s *vf_get_provider(const char *receiver_name)
 	return p;
 }
 EXPORT_SYMBOL(vf_get_provider);
-
+/*#define NO_CHEKC_PROVIDER_USE*/
+#ifdef NO_CHEKC_PROVIDER_USE
+static inline int use_provider(struct vframe_provider_s *prov)
+{
+	return prov != NULL;
+}
+static inline void unuse_provider(struct vframe_provider_s *prov)
+{
+	return;
+}
+static int vf_provider_close(struct vframe_provider_s *prov)
+{
+	return 1;
+}
+#else
+static inline int use_provider(struct vframe_provider_s *prov)
+{
+	int ret = 0;
+	if (prov) {
+		ret = atomic_inc_return(&prov->use_cnt);
+		if (ret <= 0)
+			atomic_dec_return(&prov->use_cnt);
+	}
+	return ret > 0;
+}
+static inline void unuse_provider(struct vframe_provider_s *prov)
+{
+	if (prov)
+		atomic_dec_return(&prov->use_cnt);
+}
+#define CLOSED_CNT -100000
+static int vf_provider_close(struct vframe_provider_s *prov)
+{
+	int ret;
+	int wait_max = 10000;
+	if (!prov)
+		return -1;
+	ret = atomic_add_return(CLOSED_CNT, &prov->use_cnt);
+	while (ret > CLOSED_CNT && wait_max-- > 0) {
+		schedule();/*shecule and  wait for complete.*/
+		ret = atomic_read(&prov->use_cnt);
+	};
+	if (ret > CLOSED_CNT) {
+		pr_err("**ERR***,release, provider %s not finised,%d, wait=%d\n",
+			prov->name, ret, wait_max);
+	}
+	return 0;
+}
+#endif
 int vf_notify_provider(const char *receiver_name, int event_type, void *data)
 {
 	int ret = -1;
 	struct vframe_provider_s *provider = vf_get_provider(receiver_name);
-	if (provider) {
+	if (use_provider(provider)) {
 		if (provider->ops && provider->ops->event_cb) {
 			provider->ops->event_cb(event_type, data,
 				provider->op_arg);
 			ret = 0;
 		}
+		unuse_provider(provider);
 	} else{
 		/* pr_err("Error: %s, fail to get provider of receiver %s\n",
 				__func__, receiver_name); */
@@ -100,6 +150,27 @@ int vf_notify_provider(const char *receiver_name, int event_type, void *data)
 	return ret;
 }
 EXPORT_SYMBOL(vf_notify_provider);
+
+int vf_notify_provider_by_name(const char *provider_name, int event_type,
+							   void *data)
+{
+	int ret = -1;
+	struct vframe_provider_s *provider =
+		vf_get_provider_by_name(provider_name);
+	if (use_provider(provider)) {
+		if (provider->ops && provider->ops->event_cb) {
+			provider->ops->event_cb(event_type, data,
+				provider->op_arg);
+			ret = 0;
+		}
+		unuse_provider(provider);
+	} else{
+		/* pr_err("Error: %s, fail to get provider of receiver %s\n",
+				__func__, receiver_name); */
+	}
+	return ret;
+}
+EXPORT_SYMBOL(vf_notify_provider_by_name);
 
 void vf_provider_init(struct vframe_provider_s *prov,
 		const char *name,
@@ -111,6 +182,9 @@ void vf_provider_init(struct vframe_provider_s *prov,
 	prov->name = name;
 	prov->ops = ops;
 	prov->op_arg = op_arg;
+	prov->traceget = NULL;
+	prov->traceput = NULL;
+	atomic_set(&prov->use_cnt, 0);
 	INIT_LIST_HEAD(&prov->list);
 }
 EXPORT_SYMBOL(vf_provider_init);
@@ -122,6 +196,8 @@ int vf_reg_provider(struct vframe_provider_s *prov)
 	int i;
 	if (!prov || !prov->name)
 		return -1;
+	prov->traceget = NULL;
+	prov->traceput = NULL;
 	for (i = 0; i < MAX_PROVIDER_NUM; i++) {
 		p = provider_table[i];
 		if (p) {
@@ -150,11 +226,10 @@ int vf_reg_provider(struct vframe_provider_s *prov)
 	} else{
 		pr_err("%s: Error, provider_table full\n", __func__);
 	}
-	prov->traceget = NULL;
+	atomic_set(&prov->use_cnt, 0);/*set it ready for use.*/
 	if (vfm_trace_enable & 1)
 		prov->traceget = vftrace_alloc_trace(prov->name, 1,
 				vfm_trace_num);
-	prov->traceput = NULL;
 	if (vfm_trace_enable & 2)
 		prov->traceput = vftrace_alloc_trace(prov->name, 0,
 				vfm_trace_num);
@@ -178,6 +253,7 @@ void vf_unreg_provider(struct vframe_provider_s *prov)
 				vftrace_free_trace(p->traceput);
 				p->traceput = NULL;
 			}
+			vf_provider_close(prov);
 			provider_table[i] = NULL;
 			if (vfm_debug_flag & 1)
 				pr_err("%s:%s\n", __func__, prov->name);
@@ -251,10 +327,14 @@ EXPORT_SYMBOL(vf_ext_light_unreg_provider);
 struct vframe_s *vf_peek(const char *receiver)
 {
 	struct vframe_provider_s *vfp;
+	struct vframe_s *vf = NULL;
 	vfp = vf_get_provider(receiver);
-	if (!(vfp && vfp->ops && vfp->ops->peek))
-		return NULL;
-	return vfp->ops->peek(vfp->op_arg);
+	if (use_provider(vfp)) {
+		if (vfp->ops && vfp->ops->peek)
+			vf = vfp->ops->peek(vfp->op_arg);
+		unuse_provider(vfp);
+	}
+	return vf;
 }
 EXPORT_SYMBOL(vf_peek);
 
@@ -262,13 +342,15 @@ struct vframe_s *vf_get(const char *receiver)
 {
 
 	struct vframe_provider_s *vfp;
-	struct vframe_s *vf;
+	struct vframe_s *vf = NULL;
 	vfp = vf_get_provider(receiver);
-	if (!(vfp && vfp->ops && vfp->ops->get))
-		return NULL;
-	vf = vfp->ops->get(vfp->op_arg);
-	if (vf)
-		vftrace_info_in(vfp->traceget, vf);
+	if (use_provider(vfp)) {
+		if (vfp->ops && vfp->ops->get)
+			vf = vfp->ops->get(vfp->op_arg);
+		if (vf)
+			vftrace_info_in(vfp->traceget, vf);
+		unuse_provider(vfp);
+	}
 	return vf;
 }
 EXPORT_SYMBOL(vf_get);
@@ -277,10 +359,35 @@ void vf_put(struct vframe_s *vf, const char *receiver)
 {
 	struct vframe_provider_s *vfp;
 	vfp = vf_get_provider(receiver);
-	if (!(vfp && vfp->ops && vfp->ops->put))
-		return;
-	if (vf)
-		vftrace_info_in(vfp->traceput, vf);
-	vfp->ops->put(vf, vfp->op_arg);
+	if (use_provider(vfp)) {
+		if (vfp->ops && vfp->ops->put)
+			vfp->ops->put(vf, vfp->op_arg);
+		if (vf)
+			vftrace_info_in(vfp->traceput, vf);
+		unuse_provider(vfp);
+	}
 }
 EXPORT_SYMBOL(vf_put);
+
+int vf_get_states(struct vframe_provider_s *vfp,
+	struct vframe_states *states)
+{
+	int ret = -1;
+	if (use_provider(vfp)) {
+		if (vfp->ops && vfp->ops->vf_states)
+			ret = vfp->ops->vf_states(states, vfp->op_arg);
+		unuse_provider(vfp);
+	}
+	return ret;
+}
+EXPORT_SYMBOL(vf_get_states);
+int vf_get_states_by_name(const char *receiver_name,
+	struct vframe_states *states)
+{
+	struct vframe_provider_s *vfp;
+	vfp = vf_get_provider(receiver_name);
+	return vf_get_states(vfp, states);
+}
+EXPORT_SYMBOL(vf_get_states_by_name);
+
+

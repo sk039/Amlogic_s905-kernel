@@ -299,7 +299,7 @@ static  struct clk_set_setting clks_for_formats[] = {
 		{4096*2048*30, 600}, {4096*2048*60, 600}, {INT_MAX, 600},}
 	},
 	{/*[VFORMAT_AVS]*/
-		{{1280*720*30, 100}, {1920*1080*30, 166}, {1920*1080*60, 333},
+		{{1280*720*30, 100}, {1920*1080*30, 200}, {1920*1080*60, 333},
 		{4096*2048*30, 600}, {4096*2048*60, 600}, {INT_MAX, 600},}
 	},
 	{/*[VFORMAT_YUV]*/
@@ -315,7 +315,7 @@ static  struct clk_set_setting clks_for_formats[] = {
 			{0, 0}, {0, 0}, {0, 0},}
 	},
 	{/*VFORMAT_HEVC*/
-		{{1280*720*30, 100}, {1920*1080*60, 600}, {4096*2048*25, 630},
+		{{1280*720*30, 166}, {1920*1080*30, 333}, {1920*1080*60, 333},
 		{4096*2048*30, 630}, {4096*2048*60, 630}, {INT_MAX, 630},}
 	},
 	{/*VFORMAT_H264_ENC*/
@@ -603,6 +603,7 @@ static int vdec_clock_get(enum vdec_type_e core)
 	MESON_CPU_MAJOR_ID_GXL,\
 	MESON_CPU_MAJOR_ID_GXM,\
 	MESON_CPU_MAJOR_ID_TXL,\
+	MESON_CPU_MAJOR_ID_TXLX,\
 	0}
 #include "clk.h"
 ARCH_VDEC_CLK_INIT();

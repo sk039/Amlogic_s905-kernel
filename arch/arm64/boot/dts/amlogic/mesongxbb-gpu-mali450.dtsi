@@ -8,12 +8,12 @@
  */
 
 / {
-	gpu:mali@d00c0000{
+	gpu:mali{
 		#cooling-cells = <2>; /* min followed by max */
 		compatible = "arm,mali-450";
 		interrupt-parent = <&gic>;
 		reg = <0 0xd00c0000 0 0x40000>, /*mali APB bus base address*/
-		      <0 0xc883c000 0 0x01000>, /*hiubus base address for gpu clk cntl*/
+		      <0 0xc1104440 0 0x01000>, /*reset register*/
 		      <0 0xc8100000 0 0x01000>, /*aobus  base address for gpu pmu domain*/
 		      <0 0xc883c000 0 0x01000>, /*hiubus base address for gpu clk cntl*/
 		      <0 0xc1104440 0 0x01000>;
@@ -26,7 +26,7 @@
 		pmu_domain_config = <0x1 0x2 0x4 0x4 0x0 0x0 0x0 0x0 0x0 0x1 0x2 0x0>;
 		pmu_switch_delay = <0xffff> ;
 		num_of_pp = <3> ;
-		def_clk = <3>;
+		def_clock = <3> ;
 		sc_mpp = <3>;/* number of pp used most of time.*/
 		tbl = <&clk125_cfg &clk285_cfg &clk400_cfg &clk500_cfg &clk666_cfg &clk800_cfg>;
 

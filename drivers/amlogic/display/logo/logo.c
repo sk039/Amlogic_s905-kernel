@@ -117,7 +117,7 @@ int set_osd_freescaler(int index, enum vmode_e new_mode)
 static int refresh_mode_and_logo(bool first)
 {
 	enum vmode_e cur_mode = VMODE_MAX;
-	int hdp_state = 1;//get_hpd_state();
+	int hdp_state = get_hpd_state();
 
 	if (!first && osd_get_logo_index() != logo_info.index)
 		return -1;
@@ -246,7 +246,6 @@ __setup("logo=", logo_setup);
 static int __init get_hdmi_mode(char *str)
 {
 	hdmimode = vmode_name_to_mode(str);
-	set_vout_init_vmode(str);
 
 	pr_info("get hdmimode: %s\n", str);
 	return 1;
@@ -259,6 +258,12 @@ static int __init get_cvbs_mode(char *str)
 		cvbsmode = VMODE_480CVBS;
 	else if (strncmp("576", str, 3) == 0)
 		cvbsmode = VMODE_576CVBS;
+	else if (strncmp("ntsc_m", str, 6) == 0)
+		cvbsmode = VMODE_NTSC_M;
+	else if (strncmp("pal_m", str, 5) == 0)
+		cvbsmode = VMODE_PAL_M;
+	else if (strncmp("pal_n", str, 5) == 0)
+		cvbsmode = VMODE_PAL_N;
 	else if (strncmp("nocvbs", str, 6) == 0)
 		cvbsmode = hdmimode;
 	pr_info("get cvbsmode: %s\n", str);
