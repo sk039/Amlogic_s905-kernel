@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2012-2015 ARM Limited. All rights reserved.
+ * Copyright (C) 2012-2016 ARM Limited. All rights reserved.
  * 
  * This program is free software and is provided to you under the terms of the GNU General Public License version 2
  * as published by the Free Software Foundation, and any use by you of this program is subject to the terms of such GNU licence.
@@ -1298,7 +1298,7 @@ _mali_osk_errcode_t _mali_ukk_gp_suspend_response(_mali_uk_gp_suspend_response_s
 				mali_executor_unlock();
 				return _MALI_OSK_ERR_OK;
 			} else {
-				MALI_PRINT_ERROR(("Executor: Unable to resume, GP job no longer running.\n"));
+				MALI_DEBUG_PRINT(2, ("Executor: Unable to resume  gp job becasue gp time out or any other unexpected reason!\n"));
 
 				_mali_osk_notification_delete(new_notification);
 
@@ -1459,7 +1459,7 @@ static mali_bool mali_executor_virtual_group_is_usable(void)
 #if (defined(CONFIG_MALI450) || defined(CONFIG_MALI470))
 	MALI_DEBUG_ASSERT_EXECUTOR_LOCK_HELD();
 	return ((EXEC_STATE_INACTIVE == virtual_group_state ||
-		 EXEC_STATE_IDLE == virtual_group_state) && (virtual_group->state != MALI_GROUP_STATE_ACTIVATION_PENDING)) ?
+		EXEC_STATE_IDLE == virtual_group_state) && (virtual_group->state != MALI_GROUP_STATE_ACTIVATION_PENDING)) ?
 	       MALI_TRUE : MALI_FALSE;
 #else
 	return MALI_FALSE;
@@ -1564,7 +1564,7 @@ static void mali_executor_schedule(void)
 	mali_bool trigger_pm_update = MALI_FALSE;
 	mali_bool deactivate_idle_group = MALI_TRUE;
 	mali_bool gpu_secure_mode_is_needed = MALI_FALSE;
-
+	mali_bool is_gpu_secure_mode = MALI_FALSE;
 	/* Physical groups + jobs to start in this function */
 	struct mali_group *groups_to_start[MALI_MAX_NUMBER_OF_PHYSICAL_PP_GROUPS];
 	struct mali_pp_job *jobs_to_start[MALI_MAX_NUMBER_OF_PHYSICAL_PP_GROUPS];
@@ -1796,11 +1796,16 @@ static void mali_executor_schedule(void)
 		}
 	}
 
-	/* 6. To power up group asap, we trigger pm update here. */
+	/* 6. To power up group asap,  trigger pm update only when no need to swith the gpu mode. */
 
-	if (MALI_TRUE == trigger_pm_update) {
-		trigger_pm_update = MALI_FALSE;
-		mali_pm_update_async();
+	is_gpu_secure_mode = _mali_osk_gpu_secure_mode_is_enabled();
+
+	if ((MALI_FALSE == gpu_secure_mode_is_needed && MALI_FALSE == is_gpu_secure_mode)
+	    || (MALI_TRUE == gpu_secure_mode_is_needed && MALI_TRUE == is_gpu_secure_mode)) {
+		if (MALI_TRUE == trigger_pm_update) {
+			trigger_pm_update = MALI_FALSE;
+			mali_pm_update_async();
+		}
 	}
 
 	/* 7. Assign jobs to idle virtual group (or deactivate if no job) */
@@ -1845,7 +1850,7 @@ static void mali_executor_schedule(void)
 	if (NULL != virtual_job_to_start) {
 		MALI_DEBUG_ASSERT(!mali_group_pp_is_active(virtual_group));
 		mali_group_start_pp_job(virtual_group,
-					virtual_job_to_start, 0);
+					virtual_job_to_start, 0, is_gpu_secure_mode);
 	}
 
 	for (i = 0; i < num_jobs_to_start; i++) {
@@ -1853,14 +1858,14 @@ static void mali_executor_schedule(void)
 					  groups_to_start[i]));
 		mali_group_start_pp_job(groups_to_start[i],
 					jobs_to_start[i],
-					sub_jobs_to_start[i]);
+					sub_jobs_to_start[i], is_gpu_secure_mode);
 	}
 
 	MALI_DEBUG_ASSERT_POINTER(gp_group);
 
 	if (NULL != gp_job_to_start) {
 		MALI_DEBUG_ASSERT(!mali_group_gp_is_active(gp_group));
-		mali_group_start_gp_job(gp_group, gp_job_to_start);
+		mali_group_start_gp_job(gp_group, gp_job_to_start, is_gpu_secure_mode);
 	}
 
 	/* 11. Trigger any pending PM updates */
@@ -2646,6 +2651,7 @@ void mali_executor_running_status_print(void)
 			MALI_PRINT(("\tchild group(%s) running job: %p\n", group->pp_core->hw_core.description, group->pp_running_job));
 			MALI_PRINT(("\tchild group(%s)->status: %d\n", group->pp_core->hw_core.description, group->state));
 			MALI_PRINT(("\tchild group(%s) SW power: %s\n", group->pp_core->hw_core.description, group->power_is_on ? "On" : "Off"));
+#if MALI_STATE_TRACKING
 			if (group->pm_domain) {
 				MALI_PRINT(("\tPower domain: id %u\n", mali_pm_domain_get_id(group->pm_domain)));
 				MALI_PRINT(("\tMask:0x%04x \n", mali_pm_domain_get_mask(group->pm_domain)));
@@ -2653,12 +2659,14 @@ void mali_executor_running_status_print(void)
 				MALI_PRINT(("\tCurrent power status:%s \n", (mali_pm_domain_get_mask(group->pm_domain)& mali_pm_get_current_mask()) ? "On" : "Off"));
 				MALI_PRINT(("\tWanted  power status:%s \n", (mali_pm_domain_get_mask(group->pm_domain)& mali_pm_get_wanted_mask()) ? "On" : "Off"));
 			}
+#endif
 
 			for (i = 0; i < 2; i++) {
 				if (NULL != group->l2_cache_core[i]) {
 					struct mali_pm_domain *domain;
 					domain = mali_l2_cache_get_pm_domain(group->l2_cache_core[i]);
 					MALI_PRINT(("\t L2(index %d) group SW power: %s\n", i, group->l2_cache_core[i]->power_is_on ? "On" : "Off"));
+#if MALI_STATE_TRACKING
 					if (domain) {
 						MALI_PRINT(("\tL2 Power domain: id %u\n", mali_pm_domain_get_id(domain)));
 						MALI_PRINT(("\tL2 Mask:0x%04x \n", mali_pm_domain_get_mask(domain)));
@@ -2666,6 +2674,7 @@ void mali_executor_running_status_print(void)
 						MALI_PRINT(("\tL2 Current power status:%s \n", (mali_pm_domain_get_mask(domain) & mali_pm_get_current_mask()) ? "On" : "Off"));
 						MALI_PRINT(("\tL2 Wanted  power status:%s \n", (mali_pm_domain_get_mask(domain) & mali_pm_get_wanted_mask()) ? "On" : "Off"));
 					}
+#endif
 				}
 			}
 		}

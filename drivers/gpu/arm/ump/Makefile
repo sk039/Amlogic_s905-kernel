@@ -8,6 +8,12 @@
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #
 
+# Skip this Makefile when included from modpost
+ifeq ($(KBUILD_EXTMOD),)
+
+TARGET_PLATFORM ?= aml-meson
+CONFIG ?= aml-meson-m400-1
+
 # For each arch check: CROSS_COMPILE , KDIR , CFLAGS += -DARCH
 
 export ARCH ?= arm
@@ -36,7 +42,7 @@ endif
 KDIR-$(shell uname -m):=/lib/modules/$(shell uname -r)/build
 
 ifeq ($(ARCH), arm)
-# when compiling for ARM we're cross compiling
+	# when compiling for ARM we're cross compiling
 export CROSS_COMPILE ?= $(call check_cc2, arm-linux-gnueabi-gcc, arm-linux-gnueabi-, arm-none-linux-gnueabi-)
 endif
 
@@ -65,3 +71,5 @@ kernelrelease:
 clean:
 	$(MAKE) -C $(KDIR) M=$(CURDIR) clean
 	$(MAKE) -C $(KDIR) M=$(CURDIR)/../mali clean
+
+endif

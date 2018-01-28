@@ -26,7 +26,7 @@
 #include "ump_kernel_common.h"
 #include "ump_kernel_memory_backend.h"
 
-extern struct device *ump_global_mdev;
+
 
 typedef struct os_allocator {
 	struct semaphore mutex;
@@ -146,7 +146,7 @@ static int os_allocate(void *ctx, ump_dd_mem *descriptor)
 			descriptor->block_array[pages_allocated].addr = page_to_phys(new_page);
 			descriptor->block_array[pages_allocated].size = PAGE_SIZE;
 		} else {
-			descriptor->block_array[pages_allocated].addr = dma_map_page(ump_global_mdev, new_page, 0, PAGE_SIZE, DMA_BIDIRECTIONAL);
+			descriptor->block_array[pages_allocated].addr = dma_map_page(NULL, new_page, 0, PAGE_SIZE, DMA_BIDIRECTIONAL);
 			descriptor->block_array[pages_allocated].size = PAGE_SIZE;
 		}
 
@@ -169,7 +169,7 @@ static int os_allocate(void *ctx, ump_dd_mem *descriptor)
 		while (pages_allocated) {
 			pages_allocated--;
 			if (!is_cached) {
-				dma_unmap_page(ump_global_mdev, descriptor->block_array[pages_allocated].addr, PAGE_SIZE, DMA_BIDIRECTIONAL);
+				dma_unmap_page(NULL, descriptor->block_array[pages_allocated].addr, PAGE_SIZE, DMA_BIDIRECTIONAL);
 			}
 			__free_page(pfn_to_page(descriptor->block_array[pages_allocated].addr >> PAGE_SHIFT));
 		}
@@ -218,7 +218,7 @@ static void os_free(void *ctx, ump_dd_mem *descriptor)
 	for (i = 0; i < descriptor->nr_blocks; i++) {
 		DBG_MSG(6, ("Freeing physical page. Address: 0x%08lx\n", descriptor->block_array[i].addr));
 		if (! descriptor->is_cached) {
-			dma_unmap_page(ump_global_mdev, descriptor->block_array[i].addr, PAGE_SIZE, DMA_BIDIRECTIONAL);
+			dma_unmap_page(NULL, descriptor->block_array[i].addr, PAGE_SIZE, DMA_BIDIRECTIONAL);
 		}
 		__free_page(pfn_to_page(descriptor->block_array[i].addr >> PAGE_SHIFT));
 	}
