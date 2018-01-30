@@ -80,9 +80,7 @@ static bool tvafe_dbg_enable;
 module_param(tvafe_dbg_enable, bool, 0644);
 MODULE_PARM_DESC(tvafe_dbg_enable, "enable/disable tvafe debug enable");
 
-#ifdef CONFIG_AM_DVB
 static struct tvafe_info_s *g_tvafe_info;
-#endif
 
 /***********the  version of changing log************************/
 static const char last_version_s[] = "2013-11-29||11-28";
@@ -689,7 +687,6 @@ void tvafe_cma_release(struct tvafe_dev_s *devp)
 }
 #endif
 
-#ifdef CONFIG_AM_DVB
 static int tvafe_get_v_fmt(void)
 {
 	int fmt = 0;
@@ -700,7 +697,6 @@ static int tvafe_get_v_fmt(void)
 	fmt = tvafe_cvd2_get_format(&g_tvafe_info->cvd2);
 	return fmt;
 }
-#endif
 
 /*
  * tvafe open port and init register
