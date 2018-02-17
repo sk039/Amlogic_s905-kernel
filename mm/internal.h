@@ -15,6 +15,9 @@
 #include <linux/mm.h>
 #include <linux/pagemap.h>
 #include <linux/tracepoint-defs.h>
+#ifdef CONFIG_AMLOGIC_MODIFY
+#include <linux/migrate.h>
+#endif
 
 /*
  * The set of flags that only affect watermark checking and reclaim
@@ -177,6 +180,9 @@ struct compact_control {
 	unsigned long migrate_pfn;	/* isolate_migratepages search base */
 	unsigned long last_migrated_pfn;/* Not yet flushed page being freed */
 	enum migrate_mode mode;		/* Async or sync migration mode */
+#ifdef CONFIG_AMLOGIC_MODIFY
+	enum migrate_reason reason;	/* reason for compact */
+#endif /* CONFIG_AMLOGIC_MODIFY */
 	bool ignore_skip_hint;		/* Scan blocks even if marked skip */
 	bool ignore_block_suitable;	/* Scan blocks considered unsuitable */
 	bool direct_compaction;		/* False from kcompactd or /proc/... */
@@ -472,6 +478,7 @@ struct tlbflush_unmap_batch;
 #ifdef CONFIG_ARCH_WANT_BATCHED_UNMAP_TLB_FLUSH
 void try_to_unmap_flush(void);
 void try_to_unmap_flush_dirty(void);
+void flush_tlb_batched_pending(struct mm_struct *mm);
 #else
 static inline void try_to_unmap_flush(void)
 {
@@ -479,7 +486,9 @@ static inline void try_to_unmap_flush(void)
 static inline void try_to_unmap_flush_dirty(void)
 {
 }
-
+static inline void flush_tlb_batched_pending(struct mm_struct *mm)
+{
+}
 #endif /* CONFIG_ARCH_WANT_BATCHED_UNMAP_TLB_FLUSH */
 
 extern const struct trace_print_flags pageflag_names[];

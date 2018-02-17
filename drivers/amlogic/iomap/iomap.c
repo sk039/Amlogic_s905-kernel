@@ -27,6 +27,7 @@
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/amlogic/iomap.h>
+#include <linux/amlogic/cpu_version.h>
 #include <asm/compiler.h>
 #undef pr_fmt
 #define pr_fmt(fmt) "aml_iomap: " fmt
@@ -40,7 +41,7 @@ void __iomem *meson_reg_map[IO_BUS_MAX];
 
 int aml_reg_read(u32 bus_type, unsigned int reg, unsigned int *val)
 {
-	if ((bus_type >= IO_CBUS_BASE) && (bus_type < IO_BUS_MAX)) {
+	if (bus_type < IO_BUS_MAX) {
 		*val = readl((meson_reg_map[bus_type]+reg));
 		return 0;
 	} else
@@ -50,7 +51,7 @@ EXPORT_SYMBOL(aml_reg_read);
 
 int aml_reg_write(u32 bus_type, unsigned int reg, unsigned int val)
 {
-	if ((bus_type >= IO_CBUS_BASE) && (bus_type < IO_BUS_MAX)) {
+	if (bus_type < IO_BUS_MAX) {
 		writel(val, (meson_reg_map[bus_type]+reg));
 		return 0;
 	} else
@@ -62,7 +63,7 @@ int aml_regmap_update_bits(u32 bus_type,
 					unsigned int reg, unsigned int mask,
 					unsigned int val)
 {
-	if ((bus_type >= IO_CBUS_BASE) && (bus_type < IO_BUS_MAX)) {
+	if (bus_type < IO_BUS_MAX) {
 		unsigned int tmp, orig;
 
 		aml_reg_read(bus_type, reg, &orig);
@@ -157,7 +158,8 @@ int aml_read_vcbus(unsigned int reg)
 {
 	int ret, val;
 
-	ret = aml_reg_read(IO_APB_BUS_BASE, (0x100000+(reg<<2)), &val);
+	ret = aml_reg_read(IO_VAPB_BUS_BASE, reg<<2, &val);
+
 	if (ret) {
 		pr_err("read vcbus reg %x error %d\n", reg, ret);
 		return -1;
@@ -171,7 +173,8 @@ void aml_write_vcbus(unsigned int reg, unsigned int val)
 {
 	int ret;
 
-	ret = aml_reg_write(IO_APB_BUS_BASE, (0x100000+(reg<<2)), val);
+	ret = aml_reg_write(IO_VAPB_BUS_BASE, reg<<2, val);
+
 	if (ret)
 		pr_err("write vcbus reg %x error %d\n", reg, ret);
 }
@@ -182,10 +185,11 @@ void aml_vcbus_update_bits(unsigned int reg,
 {
 	int ret;
 
-	ret = aml_regmap_update_bits(IO_APB_BUS_BASE,
-						(0x100000+(reg<<2)), mask, val);
+	ret = aml_regmap_update_bits(IO_VAPB_BUS_BASE,
+			reg<<2, mask, val);
 	if (ret)
 		pr_err("write vcbus reg %x error %d\n", reg, ret);
+
 }
 EXPORT_SYMBOL(aml_vcbus_update_bits);
 
@@ -197,7 +201,7 @@ int aml_read_dosbus(unsigned int reg)
 {
 	int ret, val;
 
-	ret = aml_reg_read(IO_APB_BUS_BASE, (0x50000+(reg<<2)), &val);
+	ret = aml_reg_read(IO_APB_BUS_BASE, reg<<2, &val);
 	if (ret) {
 		pr_err("read vcbus reg %x error %d\n", reg, ret);
 		return -1;
@@ -210,7 +214,7 @@ void aml_write_dosbus(unsigned int reg, unsigned int val)
 {
 	int ret;
 
-	ret = aml_reg_write(IO_APB_BUS_BASE, (0x50000+(reg<<2)), val);
+	ret = aml_reg_write(IO_APB_BUS_BASE, reg<<2, val);
 	if (ret)
 		pr_err("write vcbus reg %x error %d\n", reg, ret);
 }
@@ -221,12 +225,48 @@ void aml_dosbus_update_bits(unsigned int reg,
 {
 	int ret;
 
-	ret = aml_regmap_update_bits(IO_APB_BUS_BASE,
-						(0x50000+(reg<<2)), mask, val);
+	ret = aml_regmap_update_bits(IO_APB_BUS_BASE, reg<<2, mask, val);
 	if (ret)
 		pr_err("write vcbus reg %x error %d\n", reg, ret);
 }
 EXPORT_SYMBOL(aml_dosbus_update_bits);
+
+/*
+ * HIUBUS REG Read Write and Update some bits
+ */
+int aml_read_hiubus(unsigned int reg)
+{
+	int ret, val;
+
+	ret = aml_reg_read(IO_HIUBUS_BASE, reg<<2, &val);
+	if (ret) {
+		pr_err("read cbus reg %x error %d\n", reg, ret);
+		return -1;
+	} else
+		return val;
+}
+EXPORT_SYMBOL(aml_read_hiubus);
+
+void aml_write_hiubus(unsigned int reg, unsigned int val)
+{
+	int ret;
+
+	ret = aml_reg_write(IO_HIUBUS_BASE, reg<<2, val);
+	if (ret)
+		pr_err("write cbus reg %x error %d\n", reg, ret);
+}
+EXPORT_SYMBOL(aml_write_hiubus);
+
+void aml_hiubus_update_bits(unsigned int reg,
+		unsigned int mask, unsigned int val)
+{
+	int ret;
+
+	ret = aml_regmap_update_bits(IO_HIUBUS_BASE, reg<<2, mask, val);
+	if (ret)
+		pr_err("write cbus reg %x error %d\n", reg, ret);
+}
+EXPORT_SYMBOL(aml_hiubus_update_bits);
 
 static int iomap_probe(struct platform_device *pdev)
 {

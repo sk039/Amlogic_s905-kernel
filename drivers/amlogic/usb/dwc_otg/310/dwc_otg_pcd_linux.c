@@ -1262,9 +1262,11 @@ int dwc_usb_change(struct notifier_block *nb,
 
 	if (value) {
 		DWC_DEBUGPL(DBG_PCDV, "start usb device\n");
+		dwc_otg_enable_global_interrupts(otg_dev->core_if);
 		otg_dev->pcd->core_if->pcd_cb->start(otg_dev->pcd);
 	} else {
 		DWC_DEBUGPL(DBG_PCDV, "stop usb device\n");
+		dwc_otg_disable_global_interrupts(otg_dev->core_if);
 		otg_dev->pcd->core_if->pcd_cb->stop(otg_dev->pcd);
 	}
 
@@ -1364,13 +1366,15 @@ void pcd_remove(struct platform_device *pdev)
 	otg_dev->pcd = 0;
 }
 
-#ifdef CONFIG_HAS_EARLYSUSPEND
+#ifdef CONFIG_AMLOGIC_LEGACY_EARLY_SUSPEND
 int get_pcd_ums_state(dwc_otg_pcd_t *pcd)
 {
+#if 0 //Mark for compile error
 	if (gadget_wrapper &&
 		(pcd == gadget_wrapper->pcd) &&
 		gadget_wrapper->gadget.priv_data)
 		return *(int *)gadget_wrapper->gadget.priv_data;
+#endif
 	return 0;
 }
 #endif

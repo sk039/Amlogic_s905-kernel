@@ -17,8 +17,11 @@
 
 #include <linux/gpio.h>
 #include <linux/pinctrl/pinctrl.h>
+#include <linux/platform_device.h>
 #include <linux/regmap.h>
 #include <linux/types.h>
+#include <linux/module.h>
+#include "../../pinctrl/core.h"
 
 /**
  * struct meson_pmx_group - a pinmux group
@@ -36,8 +39,7 @@ struct meson_pmx_group {
 	const unsigned int *pins;
 	unsigned int num_pins;
 	bool is_gpio;
-	unsigned int reg;
-	unsigned int bit;
+	const void *data;
 };
 
 /**
@@ -85,6 +87,7 @@ enum meson_reg_type {
  * @name:	bank name
  * @first:	first pin of the bank
  * @last:	last pin of the bank
+ * @irq:	irq base number of the bank
  * @regs:	array of register descriptors
  *
  * A bank represents a set of pins controlled by a contiguous set of
@@ -96,94 +99,25 @@ struct meson_bank {
 	const char *name;
 	unsigned int first;
 	unsigned int last;
+	int irq;
 	struct meson_reg_desc regs[NUM_REG];
 };
 
-/**
- * struct meson_domain_data - domain platform data
- *
- * @name:	name of the domain
- * @banks:	set of banks belonging to the domain
- * @num_banks:	number of banks in the domain
- */
-struct meson_domain_data {
-	const char *name;
-	struct meson_bank *banks;
-	unsigned int num_banks;
-	unsigned int pin_base;
-	unsigned int num_pins;
-};
-
-/**
-  *enum meson_irq_register - registers offset of gpio irq
-  */
-enum meson_irq_register {
-	GPIO_IRQ_EDGE_OFFSET,
-	GPIO_IRQ_MUX_0_3,
-	GPIO_IRQ_MUX_4_7,
-	GPIO_IRQ_FILTER_OFFSET,
-};
-
-/**
- * struct meson_gpio_irq_desc - describe the gpio irq
- *
- * @used_flag: indicate the 'parent_virq' whether be used or not
- * @parent_virq: gpio virtual interrupt number
- * @hwirq: hw irq for gpio
- */
-struct meson_gpio_irq_desc {
-	unsigned char used_flag;
-	unsigned int parent_virq;
-	unsigned int hwirq;
-};
-
-/**
- *struct meson_irq_resource - describe resource for irq
- *
- *@irq_num: number of gpio irq
- *@gpio_irq: a pointer to 'struct meson_gpio_irq_desc'
- *@reg_irq: registers for gpio irq settings
- */
-struct meson_irq_resource {
-	unsigned char irq_num;
-	unsigned char init_flag;
-	struct meson_gpio_irq_desc *gpio_irq;
-	struct regmap *reg_irq;
-};
-
-/**
- * struct meson_domain
- *
- * @reg_mux:	registers for mux settings
- * @reg_pullen:	registers for pull-enable settings
- * @reg_pull:	registers for pull settings
- * @reg_gpio:	registers for gpio settings
- * @chip:	gpio chip associated with the domain
- * @data;	platform data for the domain
- * @node:	device tree node for the domain
- *
- * A domain represents a set of banks controlled by the same set of
- * registers.
- */
-struct meson_domain {
-	struct regmap *reg_mux;
-	struct regmap *reg_pullen;
-	struct regmap *reg_pull;
-	struct regmap *reg_gpio;
-
-	struct gpio_chip chip;
-	struct meson_domain_data *data;
-	struct device_node *of_node;
-};
-
+struct meson_pinctrl;
 struct meson_pinctrl_data {
+	const char *name;
+	int (*init)(struct meson_pinctrl *);
 	const struct pinctrl_pin_desc *pins;
 	struct meson_pmx_group *groups;
 	struct meson_pmx_func *funcs;
-	struct meson_domain_data *domain_data;
+	const struct meson_desc_pin *meson_pins;
+	struct meson_bank *banks;
 	unsigned int num_pins;
 	unsigned int num_groups;
 	unsigned int num_funcs;
+	unsigned int num_banks;
+	const struct pinmux_ops *pmx_ops;
+	void *pmx_data;
 };
 
 struct meson_pinctrl {
@@ -191,27 +125,19 @@ struct meson_pinctrl {
 	struct pinctrl_dev *pcdev;
 	struct pinctrl_desc desc;
 	struct meson_pinctrl_data *data;
-	struct meson_domain *domain;
+	struct regmap *reg_mux;
+	struct regmap *reg_pullen;
+	struct regmap *reg_pull;
+	struct regmap *reg_gpio;
+	struct gpio_chip chip;
+	struct device_node *of_node;
+	struct device_node *of_irq;
 };
 
-#define PIN(x, b)	(b + x)
+#define CMD_TEST_N_DIR 0x82000046
+#define TEST_N_OUTPUT  1
 
-#define GROUP(grp, r, b)						\
-	{								\
-		.name = #grp,						\
-		.pins = grp ## _pins,					\
-		.num_pins = ARRAY_SIZE(grp ## _pins),			\
-		.reg = r,						\
-		.bit = b,						\
-	}
-
-#define GPIO_GROUP(gpio, b)						\
-	{								\
-		.name = #gpio,						\
-		.pins = (const unsigned int[]){ PIN(gpio, b) },		\
-		.num_pins = 1,						\
-		.is_gpio = true,					\
-	}
+#define MESON_PIN(x) PINCTRL_PIN(x, #x)
 
 #define FUNCTION(fn)							\
 	{								\
@@ -220,11 +146,12 @@ struct meson_pinctrl {
 		.num_groups = ARRAY_SIZE(fn ## _groups),		\
 	}
 
-#define BANK(n, f, l, per, peb, pr, pb, dr, db, or, ob, ir, ib)		\
+#define BANK(n, f, l, i, per, peb, pr, pb, dr, db, or, ob, ir, ib)\
 	{								\
 		.name	= n,						\
 		.first	= f,						\
 		.last	= l,						\
+		.irq    = i,						\
 		.regs	= {						\
 			[REG_PULLEN]	= { per, peb },			\
 			[REG_PULL]	= { pr, pb },			\
@@ -234,11 +161,13 @@ struct meson_pinctrl {
 		},							\
 	}
 
-#define MESON_PIN(x, b) PINCTRL_PIN(PIN(x, b), #x)
+extern int meson_pinctrl_probe(struct platform_device *pdev);
 
-extern struct meson_pinctrl_data meson8_cbus_pinctrl_data;
-extern struct meson_pinctrl_data meson8_aobus_pinctrl_data;
-extern struct meson_pinctrl_data meson8b_cbus_pinctrl_data;
-extern struct meson_pinctrl_data meson8b_aobus_pinctrl_data;
-extern struct meson_pinctrl_data meson_gxl_periphs_pinctrl_data;
-extern struct meson_pinctrl_data meson_gxl_aobus_pinctrl_data;
+/* Common pmx functions */
+extern int meson_pmx_get_funcs_count(struct pinctrl_dev *pcdev);
+extern const char *meson_pmx_get_func_name(struct pinctrl_dev *pcdev,
+					unsigned int selector);
+extern int meson_pmx_get_groups(struct pinctrl_dev *pcdev,
+					unsigned int selector,
+					const char * const **groups,
+					unsigned int * const num_groups);

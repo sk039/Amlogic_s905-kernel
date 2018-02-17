@@ -222,10 +222,7 @@ static int udp_reuseport_add_sock(struct sock *sk, struct udp_hslot *hslot,
 		}
 	}
 
-	/* Initial allocation may have already happened via setsockopt */
-	if (!rcu_access_pointer(sk->sk_reuseport_cb))
-		return reuseport_alloc(sk);
-	return 0;
+	return reuseport_alloc(sk);
 }
 
 /**
@@ -813,7 +810,7 @@ static int udp_send_skb(struct sk_buff *skb, struct flowi4 *fl4)
 	if (is_udplite)  				 /*     UDP-Lite      */
 		csum = udplite_csum(skb);
 
-	else if (sk->sk_no_check_tx) {   /* UDP csum disabled */
+	else if (sk->sk_no_check_tx && !skb_is_gso(skb)) {   /* UDP csum off */
 
 		skb->ip_summed = CHECKSUM_NONE;
 		goto send;
@@ -1019,7 +1016,8 @@ int udp_sendmsg(struct sock *sk, struct msghdr *msg, size_t len)
 		flowi4_init_output(fl4, ipc.oif, sk->sk_mark, tos,
 				   RT_SCOPE_UNIVERSE, sk->sk_protocol,
 				   flow_flags,
-				   faddr, saddr, dport, inet->inet_sport);
+				   faddr, saddr, dport, inet->inet_sport,
+				   sk->sk_uid);
 
 		security_sk_classify_flow(sk, flowi4_to_flowi(fl4));
 		rt = ip_route_output_flow(net, fl4, sk);

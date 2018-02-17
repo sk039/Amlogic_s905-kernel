@@ -2453,11 +2453,16 @@ static void complete_ep(dwc_otg_pcd_ep_t *ep)
 			req->actual = ep->dwc_ep.xfer_count;
 
 		if (req->dw_align_buf) {
+			struct device *dev = &ep->pcd->otg_dev->
+				os_dep.pldev->dev;
+
+			dma_unmap_single(dev,
+				req->dw_align_buf_dma, req->length,
+				ep->dwc_ep.is_in ? DMA_TO_DEVICE :
+				DMA_FROM_DEVICE);
 			if (!ep->dwc_ep.is_in)
 				dwc_memcpy(req->buf, req->dw_align_buf, req->length);
-
-			DWC_DMA_FREE(req->length, req->dw_align_buf,
-				     req->dw_align_buf_dma);
+			DWC_FREE(req->dw_align_buf);
 		}
 
 		dwc_otg_request_done(ep, req, 0);
@@ -3333,7 +3338,7 @@ void predict_nextep_seq(dwc_otg_core_if_t *core_if)
 	dtknq1_data_t dtknqr1;
 	uint32_t in_tkn_epnums[4];
 	uint8_t seqnum[MAX_EPS_CHANNELS];
-	uint8_t intkn_seq[TOKEN_Q_DEPTH];
+	uint8_t intkn_seq[32];
 	grstctl_t resetctl = {.d32 = 0 };
 	uint8_t temp;
 	int ndx = 0;

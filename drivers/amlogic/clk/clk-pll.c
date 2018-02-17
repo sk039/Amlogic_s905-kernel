@@ -40,7 +40,11 @@
 #include <linux/string.h>
 #include <linux/amlogic/cpu_version.h>
 
+#ifdef CONFIG_ARM64
 #include "clkc.h"
+#else
+#include "m8b/clkc.h"
+#endif
 
 #define MESON_PLL_RESET				BIT(29)
 #define MESON_PLL_ENABLE			BIT(30)
@@ -57,6 +61,11 @@
 #define GXL_GP0_CNTL3 0x0a59a288
 #define GXL_GP0_CNTL4 0xc000004d
 #define GXL_GP0_CNTL5 0x00078000
+
+/* TXLX */
+/* CNTL2-5 the same to GXL*/
+#define TXLL_GP0_CNTL5 0x00058000
+
 
 #define to_meson_clk_pll(_hw) container_of(_hw, struct meson_clk_pll, hw)
 
@@ -89,6 +98,7 @@ static unsigned long meson_clk_pll_recalc_rate(struct clk_hw *hw,
 	}
 
 	p = &pll->frac;
+
 	if (p->width) {
 		reg = readl(pll->base + p->reg_off);
 		frac = PARM_GET(p->width, p->shift, reg);
@@ -168,24 +178,36 @@ static int meson_clk_pll_set_rate(struct clk_hw *hw, unsigned long rate,
 	p = &pll->n;
 
 	if (!strcmp(clk_hw_get_name(hw), "gp0_pll")) {
+		void *cntlbase = pll->base + p->reg_off;
+
 		if ((get_cpu_type() == MESON_CPU_MAJOR_ID_GXBB) ||
 			(get_cpu_type() == MESON_CPU_MAJOR_ID_GXTVBB)) {
-			writel(GXBB_GP0_CNTL2, pll->base + p->reg_off + 1*4);
-			writel(GXBB_GP0_CNTL3, pll->base + p->reg_off + 2*4);
-			writel(GXBB_GP0_CNTL4, pll->base + p->reg_off + 3*4);
-		}
-		if (get_cpu_type() >= MESON_CPU_MAJOR_ID_GXL) {
-			writel(GXL_GP0_CNTL1, pll->base + p->reg_off + 6*4);
-			writel(GXL_GP0_CNTL2, pll->base + p->reg_off + 1*4);
-			writel(GXL_GP0_CNTL3, pll->base + p->reg_off + 2*4);
-			writel(GXL_GP0_CNTL4, pll->base + p->reg_off + 3*4);
-			writel(GXL_GP0_CNTL5, pll->base + p->reg_off + 4*4);
+			writel(GXBB_GP0_CNTL2, cntlbase + (u64)1*4);
+			writel(GXBB_GP0_CNTL3, cntlbase + (u64)2*4);
+			writel(GXBB_GP0_CNTL4, cntlbase + (u64)3*4);
+		} else if (get_cpu_type() >= MESON_CPU_MAJOR_ID_GXL) {
+			writel(GXL_GP0_CNTL1, cntlbase + (u64)6*4);
+			writel(GXL_GP0_CNTL2, cntlbase + (u64)1*4);
+			writel(GXL_GP0_CNTL3, cntlbase + (u64)2*4);
+			writel(GXL_GP0_CNTL4, cntlbase + (u64)3*4);
+			writel(GXL_GP0_CNTL5, cntlbase + (u64)4*4);
+
+			reg = readl(pll->base + p->reg_off);
+			writel(((reg | (MESON_PLL_ENABLE)) &
+				(~MESON_PLL_RESET)), pll->base + p->reg_off);
+		} else if (get_cpu_type() >= MESON_CPU_MAJOR_ID_TXLX) {
+			writel(GXL_GP0_CNTL1, cntlbase + (u64)6*4);
+			writel(GXL_GP0_CNTL2, cntlbase + (u64)1*4);
+			writel(GXL_GP0_CNTL3, cntlbase + (u64)2*4);
+			writel(GXL_GP0_CNTL4, cntlbase + (u64)3*4);
+			writel(TXLL_GP0_CNTL5, cntlbase + (u64)4*4);
+
 			reg = readl(pll->base + p->reg_off);
 			writel(((reg | (MESON_PLL_ENABLE)) &
 				(~MESON_PLL_RESET)), pll->base + p->reg_off);
 		}
-	}
 
+	}
 
 	reg = readl(pll->base + p->reg_off);
 

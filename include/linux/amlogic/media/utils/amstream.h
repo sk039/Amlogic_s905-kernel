@@ -1,7 +1,7 @@
 /*
  * include/linux/amlogic/media/utils/amstream.h
  *
- * Copyright (C) 2017 Amlogic, Inc. All rights reserved.
+ * Copyright (C) 2016 Amlogic, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -13,7 +13,7 @@
  * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
  * more details.
  *
- */
+*/
 
 #ifndef AMSTREAM_H
 #define AMSTREAM_H
@@ -48,6 +48,7 @@
 #define PORT_TYPE_USERDATA      0x200
 #define PORT_TYPE_FRAME         0x400
 #define PORT_TYPE_DECODER_SCHED 0x800
+#define PORT_TYPE_DUALDEC       0x1000
 #endif
 
 #define _A_M  'S'
@@ -85,6 +86,10 @@
 #define AMSTREAM_IOC_TS_SKIPBYTE _IOW((_A_M), 0x1d, int)
 #define AMSTREAM_IOC_SUB_TYPE    _IOW((_A_M), 0x1e, int)
 #define AMSTREAM_IOC_CLEAR_VIDEO _IOW((_A_M), 0x1f, int)
+#define AMSTREAM_IOC_VDECINFO _IOR((_A_M), 0x20, int)
+#define AMSTREAM_IOC_GLOBAL_GET_VIDEO_OUTPUT  _IOR((_A_M), 0x21, int)
+#define AMSTREAM_IOC_GLOBAL_SET_VIDEO_OUTPUT  _IOW((_A_M), 0x22, int)
+#define AMSTREAM_IOC_GET_VIDEO_LAYER1_ON  _IOR((_A_M), 0x23, int)
 
 #define AMSTREAM_IOC_APTS             _IOR((_A_M), 0x40, int)
 #define AMSTREAM_IOC_VPTS             _IOR((_A_M), 0x41, int)
@@ -114,6 +119,7 @@
 #define AMSTREAM_IOC_SET_BLACKOUT_POLICY   _IOW((_A_M), 0x53, int)
 #define AMSTREAM_IOC_UD_LENGTH _IOR((_A_M), 0x54, int)
 #define AMSTREAM_IOC_UD_POC _IOR((_A_M), 0x55, int)
+#define AMSTREAM_IOC_UD_FLUSH_USERDATA _IOR((_A_M), 0x56, int)
 #define AMSTREAM_IOC_GET_SCREEN_MODE _IOR((_A_M), 0x58, int)
 #define AMSTREAM_IOC_SET_SCREEN_MODE _IOW((_A_M), 0x59, int)
 #define AMSTREAM_IOC_GET_VIDEO_DISCONTINUE_REPORT _IOR((_A_M), 0x5a, int)
@@ -155,6 +161,8 @@
 #define AMSTREAM_IOC_SET_SUBTITLE_INFO _IOW((_A_M), 0xae, int)
 #define AMSTREAM_IOC_SET_OMX_VPTS _IOW((_A_M), 0xaf, int)
 #define AMSTREAM_IOC_GET_OMX_VPTS _IOW((_A_M), 0xb0, int)
+#define AMSTREAM_IOC_GET_OMX_VERSION _IOW((_A_M), 0xb1, int)
+#define AMSTREAM_IOC_GET_OMX_INFO    _IOR((_A_M), 0xb2, unsigned int)
 
 #define AMSTREAM_IOC_GET_TRICK_VPTS _IOR((_A_M), 0xf0, int)
 #define AMSTREAM_IOC_DISABLE_SLOW_SYNC _IOW((_A_M), 0xf1, int)
@@ -203,6 +211,16 @@ enum VIDEO_DEC_TYPE {
 	VIDEO_DEC_FORMAT_MAX
 };
 
+enum FRAME_BASE_VIDEO_PATH {
+	FRAME_BASE_PATH_IONVIDEO = 0,
+	FRAME_BASE_PATH_AMLVIDEO_AMVIDEO,
+	FRAME_BASE_PATH_AMLVIDEO1_AMVIDEO2,
+	FRAME_BASE_PATH_DI_AMVIDEO,
+	FRAME_BASE_PATH_AMVIDEO,
+	FRAME_BASE_PATH_AMVIDEO2,
+	FRAME_BASE_PATH_MAX
+};
+
 struct buf_status {
 
 	int size;
@@ -244,6 +262,26 @@ struct vdec_status {
 	unsigned int status;
 };
 
+struct vdec_info {
+	char vdec_name[16];
+	unsigned int ver;
+	unsigned int frame_width;
+	unsigned int frame_height;
+	unsigned int frame_rate;
+	unsigned int bit_rate;
+	unsigned int frame_dur;
+	unsigned int frame_data;
+	unsigned int error_count;
+	unsigned int status;
+	unsigned int frame_count;
+	unsigned int error_frame_count;
+	unsigned int drop_frame_count;
+	unsigned long long total_data;
+	unsigned int samp_cnt;
+	unsigned int offset;
+	char reserved[32];
+};
+
 struct adec_status {
 	unsigned int channels;
 	unsigned int sample_rate;
@@ -269,6 +307,19 @@ struct am_io_param {
 		struct adec_status astatus;
 	};
 };
+
+struct am_io_info {
+	union {
+		int data;
+		int id;
+	};
+	int len;
+	union {
+		char buf[1];
+		struct vdec_info vinfo;
+	};
+};
+
 struct audio_info {
 
 	int valid;
@@ -334,20 +385,20 @@ struct userdata_poc_info_t {
 };
 
 /*
- ******************************************************************
- * 0x100~~0x1FF : set cmd
- * 0x200~~0x2FF : set ex cmd
- * 0x300~~0x3FF : set ptr cmd
- * 0x400~~0x7FF : set reserved cmd
- * 0x800~~0x8FF : get cmd
- * 0x900~~0x9FF : get ex cmd
- * 0xA00~~0xAFF : get ptr cmd
- * 0xBFF~~0xFFF : get reserved cmd
- * 0xX00~~0xX5F : amstream cmd(X: cmd type)
- * 0xX60~~0xXAF : video cmd(X: cmd type)
- * 0xXAF~~0xXFF : reserved cmd(X: cmd type)
- ******************************************************************
- */
+******************************************************************
+* 0x100~~0x1FF : set cmd
+* 0x200~~0x2FF : set ex cmd
+* 0x300~~0x3FF : set ptr cmd
+* 0x400~~0x7FF : set reserved cmd
+* 0x800~~0x8FF : get cmd
+* 0x900~~0x9FF : get ex cmd
+* 0xA00~~0xAFF : get ptr cmd
+* 0xBFF~~0xFFF : get reserved cmd
+* 0xX00~~0xX5F : amstream cmd(X: cmd type)
+* 0xX60~~0xXAF : video cmd(X: cmd type)
+* 0xXAF~~0xXFF : reserved cmd(X: cmd type)
+******************************************************************
+*/
 
 /*  amstream set cmd */
 #define AMSTREAM_SET_VB_START 0x101
@@ -400,6 +451,13 @@ struct userdata_poc_info_t {
 #define AMSTREAM_SET_3D_TYPE 0x171
 #define AMSTREAM_SET_VSYNC_UPINT 0x172
 #define AMSTREAM_SET_VSYNC_SLOW_FACTOR 0x173
+#define AMSTREAM_SET_FRAME_BASE_PATH 0x174
+#define AMSTREAM_SET_EOS 0x175
+#define AMSTREAM_SET_RECEIVE_ID 0x176
+#define AMSTREAM_SET_IS_RESET 0x177
+#define AMSTREAM_SET_NO_POWERDOWN   0x178
+#define AMSTREAM_SET_DV_META_WITH_EL 0x179
+
 
 /*  video set ex cmd */
 #define AMSTREAM_SET_EX_VIDEO_AXIS 0x260
@@ -407,6 +465,7 @@ struct userdata_poc_info_t {
 
 /*  amstream set ptr cmd */
 #define AMSTREAM_SET_PTR_AUDIO_INFO 0x300
+#define AMSTREAM_SET_PTR_CONFIGS 0x301
 
 /*  amstream get cmd */
 #define AMSTREAM_GET_SUB_LENGTH 0x800
@@ -428,7 +487,7 @@ struct userdata_poc_info_t {
 #define AMSTREAM_GET_AUDIO_AVG_BITRATE_BPS 0x810
 #define AMSTREAM_GET_VIDEO_AVG_BITRATE_BPS 0x811
 #define AMSTREAM_GET_ION_ID 0x812
-
+#define AMSTREAM_GET_NEED_MORE_DATA 0x813
 /*  video get cmd */
 #define AMSTREAM_GET_OMX_VPTS 0x860
 #define AMSTREAM_GET_TRICK_STAT 0x861
@@ -469,6 +528,7 @@ struct am_ioctl_parm {
 		u64 data_64;
 		enum vformat_e data_vformat;
 		enum aformat_e data_aformat;
+		enum FRAME_BASE_VIDEO_PATH frame_base_video_path;
 		char data[8];
 	};
 	u32 cmd;
@@ -497,7 +557,7 @@ struct am_ioctl_parm_ptr {
 		char data[8];
 	};
 	u32 cmd;
-	char reserved[4];
+	u32 len; /*char reserved[4]; */
 };
 
 #define SUPPORT_VDEC_NUM	(20)
@@ -534,17 +594,16 @@ struct tsdemux_ops {
 void tsdemux_set_ops(struct tsdemux_ops *ops);
 int tsdemux_set_reset_flag(void);
 
-void set_adec_func(int (*adec_func) (struct adec_status *));
+void set_adec_func(int (*adec_func)(struct adec_status *));
 void wakeup_sub_poll(void);
-void set_userdata_poc(struct userdata_poc_info_t poc);
 void init_userdata_fifo(void);
-int wakeup_userdata_poll(int wp, unsigned long start_phyaddr, int buf_size,
-	int data_length);
+void reset_userdata_fifo(int bInit);
+int wakeup_userdata_poll(struct userdata_poc_info_t poc,
+			int wp, unsigned long start_phyaddr,
+			int buf_size, int data_length);
 int get_sub_type(void);
 
-extern void clock_set_init(struct device *dev);
-
-#endif
+#endif				/**/
 
 struct tcon_gamma_table_s {
 

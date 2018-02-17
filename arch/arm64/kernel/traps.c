@@ -33,6 +33,7 @@
 #include <linux/syscalls.h>
 
 #include <asm/atomic.h>
+#include <asm/barrier.h>
 #include <asm/bug.h>
 #include <asm/debug-monitors.h>
 #include <asm/esr.h>
@@ -112,7 +113,7 @@ static void __dump_instr(const char *lvl, struct pt_regs *regs)
 	for (i = -4; i < 1; i++) {
 		unsigned int val, bad;
 
-		bad = __get_user(val, &((u32 *)addr)[i]);
+		bad = get_user(val, &((u32 *)addr)[i]);
 
 		if (!bad)
 			p += sprintf(p, i == 0 ? "(%08x) " : "%08x ", val);
@@ -435,9 +436,10 @@ int cpu_enable_cache_maint_trap(void *__unused)
 }
 
 #define __user_cache_maint(insn, address, res)			\
-	if (untagged_addr(address) >= user_addr_max())		\
+	if (address >= user_addr_max()) {			\
 		res = -EFAULT;					\
-	else							\
+	} else {						\
+		uaccess_ttbr0_enable();				\
 		asm volatile (					\
 			"1:	" insn ", %1\n"			\
 			"	mov	%w0, #0\n"		\
@@ -449,7 +451,9 @@ int cpu_enable_cache_maint_trap(void *__unused)
 			"	.popsection\n"			\
 			_ASM_EXTABLE(1b, 3b)			\
 			: "=r" (res)				\
-			: "r" (address), "i" (-EFAULT) )
+			: "r" (address), "i" (-EFAULT));	\
+		uaccess_ttbr0_disable();			\
+	}
 
 static void user_cache_maint_handler(unsigned int esr, struct pt_regs *regs)
 {
@@ -458,7 +462,7 @@ static void user_cache_maint_handler(unsigned int esr, struct pt_regs *regs)
 	int crm = (esr & ESR_ELx_SYS64_ISS_CRM_MASK) >> ESR_ELx_SYS64_ISS_CRM_SHIFT;
 	int ret = 0;
 
-	address = (rt == 31) ? 0 : regs->regs[rt];
+	address = (rt == 31) ? 0 : untagged_addr(regs->regs[rt]);
 
 	switch (crm) {
 	case ESR_ELx_SYS64_ISS_CRM_DC_CVAU:	/* DC CVAU, gets promoted */
@@ -492,6 +496,25 @@ static void ctr_read_handler(unsigned int esr, struct pt_regs *regs)
 	regs->pc += 4;
 }
 
+static void cntvct_read_handler(unsigned int esr, struct pt_regs *regs)
+{
+	int rt = (esr & ESR_ELx_SYS64_ISS_RT_MASK) >> ESR_ELx_SYS64_ISS_RT_SHIFT;
+
+	isb();
+	if (rt != 31)
+		regs->regs[rt] = arch_counter_get_cntvct();
+	regs->pc += 4;
+}
+
+static void cntfrq_read_handler(unsigned int esr, struct pt_regs *regs)
+{
+	int rt = (esr & ESR_ELx_SYS64_ISS_RT_MASK) >> ESR_ELx_SYS64_ISS_RT_SHIFT;
+
+	if (rt != 31)
+		regs->regs[rt] = read_sysreg(cntfrq_el0);
+	regs->pc += 4;
+}
+
 struct sys64_hook {
 	unsigned int esr_mask;
 	unsigned int esr_val;
@@ -509,6 +532,18 @@ static struct sys64_hook sys64_hooks[] = {
 		.esr_mask = ESR_ELx_SYS64_ISS_SYS_OP_MASK,
 		.esr_val = ESR_ELx_SYS64_ISS_SYS_CTR_READ,
 		.handler = ctr_read_handler,
+	},
+	{
+		/* Trap read access to CNTVCT_EL0 */
+		.esr_mask = ESR_ELx_SYS64_ISS_SYS_OP_MASK,
+		.esr_val = ESR_ELx_SYS64_ISS_SYS_CNTVCT,
+		.handler = cntvct_read_handler,
+	},
+	{
+		/* Trap read access to CNTFRQ_EL0 */
+		.esr_mask = ESR_ELx_SYS64_ISS_SYS_OP_MASK,
+		.esr_val = ESR_ELx_SYS64_ISS_SYS_CNTFRQ,
+		.handler = cntfrq_read_handler,
 	},
 	{},
 };
@@ -596,17 +631,37 @@ const char *esr_get_class_string(u32 esr)
 }
 
 /*
- * bad_mode handles the impossible case in the exception vector.
+ * bad_mode handles the impossible case in the exception vector. This is always
+ * fatal.
  */
 asmlinkage void bad_mode(struct pt_regs *regs, int reason, unsigned int esr)
 {
-	siginfo_t info;
-	void __user *pc = (void __user *)instruction_pointer(regs);
 	console_verbose();
 
 	pr_crit("Bad mode in %s handler detected on CPU%d, code 0x%08x -- %s\n",
 		handler[reason], smp_processor_id(), esr,
 		esr_get_class_string(esr));
+
+	die("Oops - bad mode", regs, 0);
+	local_irq_disable();
+	panic("bad mode");
+}
+
+/*
+ * bad_el0_sync handles unexpected, but potentially recoverable synchronous
+ * exceptions taken from EL0. Unlike bad_mode, this returns.
+ */
+asmlinkage void bad_el0_sync(struct pt_regs *regs, int reason, unsigned int esr)
+{
+	siginfo_t info;
+	void __user *pc = (void __user *)instruction_pointer(regs);
+	console_verbose();
+
+#ifdef CONFIG_AMLOGIC_USER_FAULT
+	show_all_pfn(current, regs);
+#endif /* CONFIG_AMLOGIC_USER_FAULT */
+	pr_crit("Bad EL0 synchronous exception detected on CPU%d, code 0x%08x -- %s\n",
+		smp_processor_id(), esr, esr_get_class_string(esr));
 	__show_regs(regs);
 
 	info.si_signo = SIGILL;
@@ -614,7 +669,10 @@ asmlinkage void bad_mode(struct pt_regs *regs, int reason, unsigned int esr)
 	info.si_code  = ILL_ILLOPC;
 	info.si_addr  = pc;
 
-	arm64_notify_die("Oops - bad mode", regs, &info, 0);
+	current->thread.fault_address = 0;
+	current->thread.fault_code = 0;
+
+	force_sig_info(info.si_signo, &info, current);
 }
 
 void __pte_error(const char *file, int line, unsigned long val)

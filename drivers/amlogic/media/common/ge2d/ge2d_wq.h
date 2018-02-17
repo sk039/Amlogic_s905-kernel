@@ -17,7 +17,11 @@
 
 #ifndef _GE2D_WQ_H_
 #define _GE2D_WQ_H_
+#ifdef CONFIG_AMLOGIC_ION
+#include <ion/ion.h>
 
+extern struct ion_client *ge2d_ion_client;
+#endif
 extern ssize_t work_queue_status_show(struct class *cla,
 		struct class_attribute *attr, char *buf);
 
@@ -26,7 +30,7 @@ extern ssize_t free_queue_status_show(struct class *cla,
 
 extern int ge2d_setup(int irq, struct reset_control *rstc);
 extern int ge2d_wq_init(struct platform_device *pdev,
-	int irq, struct reset_control *rstc, struct clk *clk);
+	int irq, struct clk *clk);
 extern int ge2d_wq_deinit(void);
 
 #endif

@@ -234,12 +234,39 @@ bool pgdat_reclaimable(struct pglist_data *pgdat)
 		pgdat_reclaimable_pages(pgdat) * 6;
 }
 
-unsigned long lruvec_lru_size(struct lruvec *lruvec, enum lru_list lru)
+/**
+ * lruvec_lru_size -  Returns the number of pages on the given LRU list.
+ * @lruvec: lru vector
+ * @lru: lru to use
+ * @zone_idx: zones to consider (use MAX_NR_ZONES for the whole LRU list)
+ */
+unsigned long lruvec_lru_size(struct lruvec *lruvec, enum lru_list lru, int zone_idx)
 {
-	if (!mem_cgroup_disabled())
-		return mem_cgroup_get_lru_size(lruvec, lru);
+	unsigned long lru_size;
+	int zid;
 
-	return node_page_state(lruvec_pgdat(lruvec), NR_LRU_BASE + lru);
+	if (!mem_cgroup_disabled())
+		lru_size = mem_cgroup_get_lru_size(lruvec, lru);
+	else
+		lru_size = node_page_state(lruvec_pgdat(lruvec), NR_LRU_BASE + lru);
+
+	for (zid = zone_idx + 1; zid < MAX_NR_ZONES; zid++) {
+		struct zone *zone = &lruvec_pgdat(lruvec)->node_zones[zid];
+		unsigned long size;
+
+		if (!managed_zone(zone))
+			continue;
+
+		if (!mem_cgroup_disabled())
+			size = mem_cgroup_get_zone_lru_size(lruvec, lru, zid);
+		else
+			size = zone_page_state(&lruvec_pgdat(lruvec)->node_zones[zid],
+				       NR_ZONE_LRU_BASE + lru);
+		lru_size -= min(size, lru_size);
+	}
+
+	return lru_size;
+
 }
 
 /*
@@ -1382,8 +1409,7 @@ int __isolate_lru_page(struct page *page, isolate_mode_t mode)
  * be complete before mem_cgroup_update_lru_size due to a santity check.
  */
 static __always_inline void update_lru_sizes(struct lruvec *lruvec,
-			enum lru_list lru, unsigned long *nr_zone_taken,
-			unsigned long nr_taken)
+			enum lru_list lru, unsigned long *nr_zone_taken)
 {
 	int zid;
 
@@ -1392,11 +1418,11 @@ static __always_inline void update_lru_sizes(struct lruvec *lruvec,
 			continue;
 
 		__update_lru_size(lruvec, lru, zid, -nr_zone_taken[zid]);
+#ifdef CONFIG_MEMCG
+		mem_cgroup_update_lru_size(lruvec, lru, zid, -nr_zone_taken[zid]);
+#endif
 	}
 
-#ifdef CONFIG_MEMCG
-	mem_cgroup_update_lru_size(lruvec, lru, -nr_taken);
-#endif
 }
 
 /*
@@ -1430,6 +1456,10 @@ static unsigned long isolate_lru_pages(unsigned long nr_to_scan,
 	unsigned long nr_skipped[MAX_NR_ZONES] = { 0, };
 	unsigned long scan, nr_pages;
 	LIST_HEAD(pages_skipped);
+#ifdef CONFIG_AMLOGIC_MODIFY
+	int num = NR_INACTIVE_ANON_CMA - NR_INACTIVE_ANON;
+	int migrate_type = 0;
+#endif /* CONFIG_AMLOGIC_MODIFY */
 
 	for (scan = 0; scan < nr_to_scan && nr_taken < nr_to_scan &&
 					!list_empty(src);) {
@@ -1458,6 +1488,14 @@ static unsigned long isolate_lru_pages(unsigned long nr_to_scan,
 			nr_taken += nr_pages;
 			nr_zone_taken[page_zonenum(page)] += nr_pages;
 			list_move(&page->lru, dst);
+		#ifdef CONFIG_AMLOGIC_MODIFY
+			migrate_type = get_pageblock_migratetype(page);
+			if (is_migrate_cma(migrate_type) ||
+			    is_migrate_isolate(migrate_type))
+				__mod_zone_page_state(page_zone(page),
+					NR_LRU_BASE + lru + num,
+					-nr_pages);
+		#endif /* CONFIG_AMLOGIC_MODIFY */
 			break;
 
 		case -EBUSY:
@@ -1501,7 +1539,7 @@ static unsigned long isolate_lru_pages(unsigned long nr_to_scan,
 	*nr_scanned = scan;
 	trace_mm_vmscan_lru_isolate(sc->reclaim_idx, sc->order, nr_to_scan, scan,
 				    nr_taken, mode, is_file_lru(lru));
-	update_lru_sizes(lruvec, lru, nr_zone_taken, nr_taken);
+	update_lru_sizes(lruvec, lru, nr_zone_taken);
 	return nr_taken;
 }
 
@@ -1565,7 +1603,11 @@ int isolate_lru_page(struct page *page)
 static int too_many_isolated(struct pglist_data *pgdat, int file,
 		struct scan_control *sc)
 {
+#ifdef CONFIG_AMLOGIC_MODIFY
+	signed long inactive, isolated;
+#else
 	unsigned long inactive, isolated;
+#endif /* CONFIG_AMLOGIC_MODIFY */
 
 	if (current_is_kswapd())
 		return 0;
@@ -1581,6 +1623,9 @@ static int too_many_isolated(struct pglist_data *pgdat, int file,
 		isolated = node_page_state(pgdat, NR_ISOLATED_ANON);
 	}
 
+#ifdef CONFIG_AMLOGIC_MODIFY
+	isolated -= node_page_state(pgdat, NR_CMA_ISOLATED);
+#endif /* CONFIG_AMLOGIC_MODIFY */
 	/*
 	 * GFP_NOIO/GFP_NOFS callers are allowed to isolate more pages, so they
 	 * won't get blocked by normal direct-reclaimers, forming a circular
@@ -1589,6 +1634,12 @@ static int too_many_isolated(struct pglist_data *pgdat, int file,
 	if ((sc->gfp_mask & (__GFP_IO | __GFP_FS)) == (__GFP_IO | __GFP_FS))
 		inactive >>= 3;
 
+#ifdef CONFIG_AMLOGIC_MODIFY
+	WARN_ONCE(isolated > inactive,
+		  "isolated:%ld, cma:%ld, inactive:%ld, mask:%x, file:%d\n",
+		  isolated, node_page_state(pgdat, NR_CMA_ISOLATED),
+		  inactive, sc->gfp_mask, file);
+#endif /* CONFIG_AMLOGIC_MODIFY */
 	return isolated > inactive;
 }
 
@@ -1857,6 +1908,10 @@ static void move_active_pages_to_lru(struct lruvec *lruvec,
 	unsigned long pgmoved = 0;
 	struct page *page;
 	int nr_pages;
+#ifdef CONFIG_AMLOGIC_MODIFY
+	int num = NR_INACTIVE_ANON_CMA - NR_INACTIVE_ANON;
+	int migrate_type = 0;
+#endif /* CONFIG_AMLOGIC_MODIFY */
 
 	while (!list_empty(list)) {
 		page = lru_to_page(list);
@@ -1869,6 +1924,14 @@ static void move_active_pages_to_lru(struct lruvec *lruvec,
 		update_lru_size(lruvec, lru, page_zonenum(page), nr_pages);
 		list_move(&page->lru, &lruvec->lists[lru]);
 		pgmoved += nr_pages;
+	#ifdef CONFIG_AMLOGIC_MODIFY
+		migrate_type = get_pageblock_migratetype(page);
+		if (is_migrate_cma(migrate_type) ||
+		    is_migrate_isolate(migrate_type))
+			__mod_zone_page_state(page_zone(page),
+					      NR_LRU_BASE + lru + num,
+					      nr_pages);
+	#endif /* CONFIG_AMLOGIC_MODIFY */
 
 		if (put_page_testzero(page)) {
 			__ClearPageLRU(page);
@@ -2019,11 +2082,10 @@ static bool inactive_list_is_low(struct lruvec *lruvec, bool file,
 						struct scan_control *sc)
 {
 	unsigned long inactive_ratio;
-	unsigned long inactive;
-	unsigned long active;
+	unsigned long inactive, active;
+	enum lru_list inactive_lru = file * LRU_FILE;
+	enum lru_list active_lru = file * LRU_FILE + LRU_ACTIVE;
 	unsigned long gb;
-	struct pglist_data *pgdat = lruvec_pgdat(lruvec);
-	int zid;
 
 	/*
 	 * If we don't have swap space, anonymous page deactivation
@@ -2032,33 +2094,16 @@ static bool inactive_list_is_low(struct lruvec *lruvec, bool file,
 	if (!file && !total_swap_pages)
 		return false;
 
-	inactive = lruvec_lru_size(lruvec, file * LRU_FILE);
-	active = lruvec_lru_size(lruvec, file * LRU_FILE + LRU_ACTIVE);
-
-	/*
-	 * For zone-constrained allocations, it is necessary to check if
-	 * deactivations are required for lowmem to be reclaimed. This
-	 * calculates the inactive/active pages available in eligible zones.
-	 */
-	for (zid = sc->reclaim_idx + 1; zid < MAX_NR_ZONES; zid++) {
-		struct zone *zone = &pgdat->node_zones[zid];
-		unsigned long inactive_zone, active_zone;
-
-		if (!managed_zone(zone))
-			continue;
-
-		inactive_zone = zone_page_state(zone,
-				NR_ZONE_LRU_BASE + (file * LRU_FILE));
-		active_zone = zone_page_state(zone,
-				NR_ZONE_LRU_BASE + (file * LRU_FILE) + LRU_ACTIVE);
-
-		inactive -= min(inactive, inactive_zone);
-		active -= min(active, active_zone);
-	}
+	inactive = lruvec_lru_size(lruvec, inactive_lru, sc->reclaim_idx);
+	active = lruvec_lru_size(lruvec, active_lru, sc->reclaim_idx);
 
 	gb = (inactive + active) >> (30 - PAGE_SHIFT);
 	if (gb)
 		inactive_ratio = int_sqrt(10 * gb);
+#ifdef CONFIG_AMLOGIC_MODIFY
+	else if (!file && (totalram_pages >> (20 - PAGE_SHIFT)) >= 512)
+		inactive_ratio = 2;
+#endif /* CONFIG_AMLOGIC_MODIFY */
 	else
 		inactive_ratio = 1;
 
@@ -2201,7 +2246,7 @@ static void get_scan_count(struct lruvec *lruvec, struct mem_cgroup *memcg,
 	 * system is under heavy pressure.
 	 */
 	if (!inactive_list_is_low(lruvec, true, sc) &&
-	    lruvec_lru_size(lruvec, LRU_INACTIVE_FILE) >> sc->priority) {
+	    lruvec_lru_size(lruvec, LRU_INACTIVE_FILE, sc->reclaim_idx) >> sc->priority) {
 		scan_balance = SCAN_FILE;
 		goto out;
 	}
@@ -2213,6 +2258,10 @@ static void get_scan_count(struct lruvec *lruvec, struct mem_cgroup *memcg,
 	 * This scanning priority is essentially the inverse of IO cost.
 	 */
 	anon_prio = swappiness;
+#ifdef CONFIG_AMLOGIC_MODIFY
+	if (get_nr_swap_pages() * 3 < total_swap_pages)
+		anon_prio >>= 1;
+#endif /* CONFIG_AMLOGIC_MODIFY */
 	file_prio = 200 - anon_prio;
 
 	/*
@@ -2227,10 +2276,10 @@ static void get_scan_count(struct lruvec *lruvec, struct mem_cgroup *memcg,
 	 * anon in [0], file in [1]
 	 */
 
-	anon  = lruvec_lru_size(lruvec, LRU_ACTIVE_ANON) +
-		lruvec_lru_size(lruvec, LRU_INACTIVE_ANON);
-	file  = lruvec_lru_size(lruvec, LRU_ACTIVE_FILE) +
-		lruvec_lru_size(lruvec, LRU_INACTIVE_FILE);
+	anon  = lruvec_lru_size(lruvec, LRU_ACTIVE_ANON, MAX_NR_ZONES) +
+		lruvec_lru_size(lruvec, LRU_INACTIVE_ANON, MAX_NR_ZONES);
+	file  = lruvec_lru_size(lruvec, LRU_ACTIVE_FILE, MAX_NR_ZONES) +
+		lruvec_lru_size(lruvec, LRU_INACTIVE_FILE, MAX_NR_ZONES);
 
 	spin_lock_irq(&pgdat->lru_lock);
 	if (unlikely(reclaim_stat->recent_scanned[0] > anon / 4)) {
@@ -2268,7 +2317,7 @@ out:
 			unsigned long size;
 			unsigned long scan;
 
-			size = lruvec_lru_size(lruvec, lru);
+			size = lruvec_lru_size(lruvec, lru, sc->reclaim_idx);
 			scan = size >> sc->priority;
 
 			if (!scan && pass && force_scan)

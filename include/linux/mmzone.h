@@ -124,8 +124,9 @@ enum zone_stat_item {
 	NR_SLAB_UNRECLAIMABLE,
 	NR_PAGETABLE,		/* used for pagetables */
 	NR_KERNEL_STACK_KB,	/* measured in KiB */
-	/* Second 128 byte cacheline */
+	NR_KAISERTABLE,
 	NR_BOUNCE,
+	/* Second 128 byte cacheline */
 #if IS_ENABLED(CONFIG_ZSMALLOC)
 	NR_ZSPAGES,		/* allocated in zsmalloc */
 #endif
@@ -137,7 +138,23 @@ enum zone_stat_item {
 	NUMA_LOCAL,		/* allocation from local node */
 	NUMA_OTHER,		/* allocation from other node */
 #endif
+#ifdef CONFIG_AMLOGIC_MODIFY /* get free pages according migrate type */
+	NR_FREE_UNMOVABLE,
+	NR_FREE_MOVABLE,
+	NR_FREE_RECLAIMABLE,
+	NR_FREE_HIGHATOMIC,
+#endif /* CONFIG_AMLOGIC_MODIFY */
 	NR_FREE_CMA_PAGES,
+#ifdef CONFIG_AMLOGIC_MODIFY
+	/* This is in order with MIGRATE_TYPES */
+	NR_FREE_ISOLATE,
+	NR_INACTIVE_ANON_CMA,	/* must match order of LRU_[IN]ACTIVE */
+	NR_ACTIVE_ANON_CMA,
+	NR_INACTIVE_FILE_CMA,
+	NR_ACTIVE_FILE_CMA,
+	NR_UNEVICTABLE_FILE_CMA,
+	NR_CMA_ISOLATED,	/* cma isolate */
+#endif /* CONFIG_AMLOGIC_MODIFY */
 	NR_VM_ZONE_STAT_ITEMS };
 
 enum node_stat_item {
@@ -672,6 +689,8 @@ typedef struct pglist_data {
 	 * is the first PFN that needs to be initialised.
 	 */
 	unsigned long first_deferred_pfn;
+	/* Number of non-deferred pages */
+	unsigned long static_init_pgcnt;
 #endif /* CONFIG_DEFERRED_STRUCT_PAGE_INIT */
 
 #ifdef CONFIG_TRANSPARENT_HUGEPAGE
@@ -779,7 +798,7 @@ static inline struct pglist_data *lruvec_pgdat(struct lruvec *lruvec)
 #endif
 }
 
-extern unsigned long lruvec_lru_size(struct lruvec *lruvec, enum lru_list lru);
+extern unsigned long lruvec_lru_size(struct lruvec *lruvec, enum lru_list lru, int zone_idx);
 
 #ifdef CONFIG_HAVE_MEMORY_PRESENT
 void memory_present(int nid, unsigned long start, unsigned long end);
@@ -972,12 +991,16 @@ static __always_inline struct zoneref *next_zones_zonelist(struct zoneref *z,
  * @zonelist - The zonelist to search for a suitable zone
  * @highest_zoneidx - The zone index of the highest zone to return
  * @nodes - An optional nodemask to filter the zonelist with
- * @zone - The first suitable zone found is returned via this parameter
+ * @return - Zoneref pointer for the first suitable zone found (see below)
  *
  * This function returns the first zone at or below a given zone index that is
  * within the allowed nodemask. The zoneref returned is a cursor that can be
  * used to iterate the zonelist with next_zones_zonelist by advancing it by
  * one before calling.
+ *
+ * When no eligible zone is found, zoneref->zone is NULL (zoneref itself is
+ * never NULL). This may happen either genuinely, or due to concurrent nodemask
+ * update due to cpuset modification.
  */
 static inline struct zoneref *first_zones_zonelist(struct zonelist *zonelist,
 					enum zone_type highest_zoneidx,

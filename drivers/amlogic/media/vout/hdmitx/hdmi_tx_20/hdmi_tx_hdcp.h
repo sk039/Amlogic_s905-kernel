@@ -26,10 +26,8 @@
  * On MBX project, it is too late for HDCP get from
  * other devices
  */
-
-/* int task_tx_key_setting(unsigned force_wrong); */
-
-int hdcp_ksv_valid(unsigned char *dat);
+extern int hdcp_ksv_valid(unsigned char *dat);
+extern unsigned int hdcp_get_downstream_ver(void);
 
 #endif
 

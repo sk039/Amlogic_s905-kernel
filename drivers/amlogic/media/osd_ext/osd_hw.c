@@ -26,8 +26,6 @@
 #include <linux/slab.h>
 #include <linux/interrupt.h>
 #include <linux/kthread.h>
-#include <sw_sync.h>
-#include <sync.h>
 
 /* Android Headers */
 #include <sw_sync.h>
@@ -40,8 +38,8 @@
 #include <linux/amlogic/media/canvas/canvas.h>
 #include <linux/amlogic/media/canvas/canvas_mgr.h>
 #endif
-#ifdef CONFIG_AMLOGIC_VIDEO
-#include <linux/amlogic/amports/vframe_receiver.h>
+#ifdef CONFIG_AMLOGIC_MEDIA_VIDEO
+#include <linux/amlogic/media/amports/vframe_receiver.h>
 #endif
 
 /* Local Headers */
@@ -81,14 +79,14 @@ struct mutex ext_post_fence_list_lock;
 static void osd_ext_pan_display_fence(struct osd_fence_map_s *fence_map);
 #endif
 
-#ifdef CONFIG_AMLOGIC_VIDEO
+#ifdef CONFIG_AMLOGIC_MEDIA_VIDEO
 #define PROVIDER_NAME "osd_ext"
 static struct vframe_s vf;
 static struct vframe_provider_s osd_ext_vf_prov;
 static unsigned char osd_ext_vf_prov_init;
 #endif
 
-#ifdef CONFIG_AMLOGIC_VIDEO
+#ifdef CONFIG_AMLOGIC_MEDIA_VIDEO
 static int g_vf_visual_width;
 static int g_vf_width;
 static int g_vf_height;
@@ -368,7 +366,7 @@ int osd_ext_sync_request(u32 index, u32 yres, u32 xoffset, u32 yoffset,
 }
 #endif
 
-#ifdef CONFIG_AMLOGIC_VIDEO
+#ifdef CONFIG_AMLOGIC_MEDIA_VIDEO
 static struct vframe_s *osd_ext_vf_peek(void *arg)
 {
 	if ((osd_ext_vf_need_update && (vf.width > 0) && (vf.height > 0)))
@@ -538,15 +536,72 @@ void osd_ext_wait_vsync_hw(void)
 {
 	vsync_hit = false;
 
-	wait_event_interruptible_timeout(osd_ext_vsync_wq, vsync_hit, HZ);
+	wait_event_interruptible_timeout(osd_ext_vsync_wq,
+		vsync_hit, msecs_to_jiffies(1000));
 }
 
 s32 osd_ext_wait_vsync_event(void)
 {
 	vsync_hit = false;
-	wait_event_interruptible_timeout(osd_ext_vsync_wq, vsync_hit, 1);
+	wait_event_interruptible_timeout(osd_ext_vsync_wq,
+		vsync_hit, msecs_to_jiffies(1000));
 	return 0;
 }
+
+/* the return stride unit is 128bit(16bytes) */
+static u32 line_stride_calc(
+		u32 fmt_mode,
+		u32 hsize,
+		u32 stride_align_32bytes)
+{
+	u32 line_stride = 0;
+
+	/* 2-bit LUT */
+	if (fmt_mode == 0)
+		line_stride = ((hsize<<1)+127)>>7;
+	/* 4-bit LUT */
+	else if (fmt_mode == 1)
+		line_stride = ((hsize<<2)+127)>>7;
+	/* 8-bit LUT */
+	else if (fmt_mode == 2)
+		line_stride = ((hsize<<3)+127)>>7;
+	/* 4:2:2, 32-bit per 2 pixels */
+	else if (fmt_mode == 3)
+		line_stride = ((((hsize+1)>>1)<<5)+127)>>7;
+	/* 16-bit LUT */
+	else if (fmt_mode == 4)
+		line_stride = ((hsize<<4)+127)>>7;
+	/* 32-bit LUT */
+	else if (fmt_mode == 5)
+		line_stride = ((hsize<<5)+127)>>7;
+	/* 24-bit LUT */
+	else if (fmt_mode == 7)
+		line_stride = ((hsize<<4)+(hsize<<3)+127)>>7;
+	/* need wr ddr is 32bytes aligned */
+	if (stride_align_32bytes)
+		line_stride = ((line_stride+1)>>1)<<1;
+	else
+		line_stride = line_stride;
+	return line_stride;
+}
+
+static void osd_ext_update_phy_addr(u32 index)
+{
+	u32 line_stride, fmt_mode;
+
+	fmt_mode =
+		osd_ext_hw.color_info[index]->hw_colormat << 2;
+	line_stride = line_stride_calc(fmt_mode,
+		osd_ext_hw.fb_gem[index].width, 1);
+	VSYNCOSD_WR_MPEG_REG(
+		VIU_OSD1_BLK1_CFG_W4,
+		osd_ext_hw.fb_gem[index].addr);
+	VSYNCOSD_WR_MPEG_REG_BITS(
+		VIU_OSD1_BLK2_CFG_W4,
+		line_stride,
+		0, 12);
+}
+
 
 void osd_ext_set_gbl_alpha_hw(u32 index, u32 gbl_alpha)
 {
@@ -680,6 +735,7 @@ void osd_ext_setup(struct osd_ctl_s *osd_ext_ctl,
 		   const struct color_bit_define_s *color,
 		   int index)
 {
+	int cpu_type;
 	u32 w = (color->bpp * xres_virtual + 7) >> 3;
 	struct pandata_s disp_data;
 	struct pandata_s pan_data;
@@ -709,7 +765,17 @@ void osd_ext_setup(struct osd_ctl_s *osd_ext_ctl,
 		osd_ext_hw.fb_gem[index].width = w;
 		osd_ext_hw.fb_gem[index].height = yres_virtual;
 
+	if (color != osd_ext_hw.color_info[index]) {
+		osd_ext_hw.color_info[index] = color;
+		add_to_update_list(index, OSD_COLOR_MODE);
+	}
+
+	cpu_type = get_cpu_type();
+	if (cpu_type == MESON_CPU_MAJOR_ID_AXG)
+		osd_ext_update_phy_addr(0);
+
 #ifdef CONFIG_AMLOGIC_MEDIA_CANVAS
+	else {
 		if (fbmem == 0) {
 			canvas_config(osd_ext_hw.fb_gem[index].canvas_idx,
 				osd_hw->fb_gem[index].addr,
@@ -723,12 +789,8 @@ void osd_ext_setup(struct osd_ctl_s *osd_ext_ctl,
 				osd_ext_hw.fb_gem[index].height,
 				CANVAS_ADDR_NOWRAP, CANVAS_BLKMODE_LINEAR);
 		}
-#endif
 	}
-
-	if (color != osd_ext_hw.color_info[index]) {
-		osd_ext_hw.color_info[index] = color;
-		add_to_update_list(index, OSD_COLOR_MODE);
+#endif
 	}
 
 	/* osd blank only control by /sys/class/graphcis/fbx/blank */
@@ -799,8 +861,8 @@ void osd_ext_enable_hw(u32 index, int enable)
 static void osd_ext_set_free_scale_enable_mode0(u32 index, u32 enable)
 {
 	static struct pandata_s save_disp_data = { 0, 0, 0, 0 };
-#ifdef CONFIG_AMLOGIC_VIDEO
-#ifdef CONFIG_POST_PROCESS_MANAGER
+#ifdef CONFIG_AMLOGIC_MEDIA_VIDEO
+#ifdef CONFIG_AMLOGIC_POST_PROCESS_MANAGER
 	int mode_changed = 0;
 
 	if ((index == OSD1) &&
@@ -815,7 +877,7 @@ static void osd_ext_set_free_scale_enable_mode0(u32 index, u32 enable)
 	if (index == OSD1) {
 		if (enable) {
 			osd_ext_vf_need_update = true;
-#ifdef CONFIG_AMLOGIC_VIDEO
+#ifdef CONFIG_AMLOGIC_MEDIA_VIDEO
 			if ((osd_ext_hw.free_src_data[OSD1].x_end > 0)
 			    && (osd_ext_hw.free_src_data[OSD1].x_end > 0)) {
 				vf.width =
@@ -875,7 +937,7 @@ static void osd_ext_set_free_scale_enable_mode0(u32 index, u32 enable)
 
 			add_to_update_list(OSD1, DISP_GEOMETRY);
 			add_to_update_list(OSD1, OSD_COLOR_MODE);
-#ifdef CONFIG_AMLOGIC_VIDEO
+#ifdef CONFIG_AMLOGIC_MEDIA_VIDEO
 			vf_unreg_provider(&osd_ext_vf_prov);
 #endif
 
@@ -886,8 +948,8 @@ static void osd_ext_set_free_scale_enable_mode0(u32 index, u32 enable)
 	}
 
 	osd_ext_enable_hw(osd_ext_hw.enable[index], index);
-#ifdef CONFIG_AMLOGIC_VIDEO
-#ifdef CONFIG_POST_PROCESS_MANAGER
+#ifdef CONFIG_AMLOGIC_MEDIA_VIDEO
+#ifdef CONFIG_AMLOGIC_POST_PROCESS_MANAGER
 	if (mode_changed) {
 		/* extern void vf_ppmgr_reset(int type); */
 		vf_ppmgr_reset(1);
@@ -1232,6 +1294,13 @@ void osd_ext_pan_display_hw(u32 index, unsigned int xoffset,
 			     osd_ext_hw.pandata[index].y_start,
 			     osd_ext_hw.pandata[index].y_end);
 	}
+}
+
+void osd_ext_get_info(u32 index, u32 *addr, u32 *width, u32 *height)
+{
+	*addr = osd_ext_hw.fb_gem[index].addr;
+	*width = osd_ext_hw.fb_gem[index].width;
+	*height = osd_ext_hw.fb_gem[index].height;
 }
 
 static void osd1_update_disp_scale_enable(void)
@@ -2498,7 +2567,9 @@ void osd_ext_set_clone_hw(u32 index, u32 clone)
 			memcpy(&pandata, &osd_ext_hw.pandata[index],
 					sizeof(struct pandata_s));
 #ifdef CONFIG_AMLOGIC_MEDIA_CANVAS
-			canvas_update_addr(osd_ext_hw.fb_gem[index].canvas_idx,
+			if (cpu_type != MESON_CPU_MAJOR_ID_AXG)
+				canvas_update_addr(
+					osd_ext_hw.fb_gem[index].canvas_idx,
 					osd_hw->fb_gem[index].addr);
 #endif
 		}
@@ -2508,7 +2579,9 @@ void osd_ext_set_clone_hw(u32 index, u32 clone)
 		else {
 			color_info[index] = osd_ext_hw.color_info[index];
 #ifdef CONFIG_AMLOGIC_MEDIA_CANVAS
-			canvas_update_addr(osd_ext_hw.fb_gem[index].canvas_idx,
+			if (cpu_type != MESON_CPU_MAJOR_ID_AXG)
+				canvas_update_addr(
+					osd_ext_hw.fb_gem[index].canvas_idx,
 					osd_ext_hw.fb_gem[index].addr);
 #endif
 			osd_ext_hw.color_info[index] = color_info[index];

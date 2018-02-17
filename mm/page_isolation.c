@@ -164,7 +164,11 @@ int start_isolate_page_range(unsigned long start_pfn, unsigned long end_pfn,
 {
 	unsigned long pfn;
 	unsigned long undo_pfn;
+#ifdef CONFIG_AMLOGIC_MODIFY
+	struct page *page = NULL;		/* avoid compile error */
+#else
 	struct page *page;
+#endif /* CONFIG_AMLOGIC_MODIFY */
 
 	BUG_ON(!IS_ALIGNED(start_pfn, pageblock_nr_pages));
 	BUG_ON(!IS_ALIGNED(end_pfn, pageblock_nr_pages));
@@ -179,6 +183,11 @@ int start_isolate_page_range(unsigned long start_pfn, unsigned long end_pfn,
 			goto undo;
 		}
 	}
+#ifdef CONFIG_AMLOGIC_MODIFY
+	if (migratetype == MIGRATE_CMA && page)
+		mod_zone_page_state(page_zone(page), NR_CMA_ISOLATED,
+				    end_pfn - start_pfn);
+#endif /* CONFIG_AMLOGIC_MODIFY */
 	return 0;
 undo:
 	for (pfn = start_pfn;
@@ -196,7 +205,11 @@ int undo_isolate_page_range(unsigned long start_pfn, unsigned long end_pfn,
 			    unsigned migratetype)
 {
 	unsigned long pfn;
+#ifdef CONFIG_AMLOGIC_MODIFY
+	struct page *page = NULL;		/* avoid compile error */
+#else
 	struct page *page;
+#endif
 
 	BUG_ON(!IS_ALIGNED(start_pfn, pageblock_nr_pages));
 	BUG_ON(!IS_ALIGNED(end_pfn, pageblock_nr_pages));
@@ -209,6 +222,11 @@ int undo_isolate_page_range(unsigned long start_pfn, unsigned long end_pfn,
 			continue;
 		unset_migratetype_isolate(page, migratetype);
 	}
+#ifdef CONFIG_AMLOGIC_MODIFY
+	if (migratetype == MIGRATE_CMA && page)
+		mod_zone_page_state(page_zone(page), NR_CMA_ISOLATED,
+				    start_pfn - end_pfn);
+#endif /* CONFIG_AMLOGIC_MODIFY */
 	return 0;
 }
 /*
@@ -240,8 +258,17 @@ __test_page_isolated_in_pageblock(unsigned long pfn, unsigned long end_pfn,
 		else if (skip_hwpoisoned_pages && PageHWPoison(page))
 			/* A HWPoisoned page cannot be also PageBuddy */
 			pfn++;
+	#ifdef CONFIG_AMLOGIC_MODIFY
+		else { /* for debug */
+			pr_debug("%s, pfn:%lx, flag:%lx, map_cnt:%d\n",
+				__func__, pfn, page->flags,
+				atomic_read(&page->_mapcount));
+			break;
+		}
+	#else
 		else
 			break;
+	#endif /* CONFIG_AMLOGIC_MODIFY */
 	}
 
 	return pfn;
@@ -266,8 +293,16 @@ int test_pages_isolated(unsigned long start_pfn, unsigned long end_pfn,
 			break;
 	}
 	page = __first_valid_page(start_pfn, end_pfn - start_pfn);
+#ifdef CONFIG_AMLOGIC_MODIFY
+	if ((pfn < end_pfn) || !page) { /* for debug */
+		pr_err("%s, pfn:%lx, endpfn:%lx, page:%p\n",
+			__func__, pfn, end_pfn, page);
+		return -EBUSY;
+	}
+#else
 	if ((pfn < end_pfn) || !page)
 		return -EBUSY;
+#endif /* CONFIG_AMLOGIC_MODIFY */
 	/* Check all pages are free or marked as ISOLATED */
 	zone = page_zone(page);
 	spin_lock_irqsave(&zone->lock, flags);
@@ -285,6 +320,16 @@ struct page *alloc_migrate_target(struct page *page, unsigned long private,
 {
 	gfp_t gfp_mask = GFP_USER | __GFP_MOVABLE;
 
+#ifdef CONFIG_AMLOGIC_MODIFY
+	/*
+	 * currently this function is only used for CMA migrate, so do not
+	 * allcate memory from cma freelist again
+	 * TODO:
+	 * if this flag is set and migrate can't allocate memory from other
+	 * freelist, try to allocate from another cma pool
+	 */
+	gfp_mask |= __GFP_BDEV;
+#endif
 	/*
 	 * TODO: allocate a destination hugepage from a nearest neighbor node,
 	 * accordance with memory policy of the user process if possible. For

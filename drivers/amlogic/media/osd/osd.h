@@ -93,7 +93,11 @@ enum color_index_e {
 #define FBIOPUT_OSD_ROTATE_ON            0x4516
 #define FBIOPUT_OSD_ROTATE_ANGLE         0x4517
 #define FBIOPUT_OSD_SYNC_ADD             0x4518
+#define FBIOPUT_OSD_SYNC_RENDER_ADD      0x4519
 
+#define FB_IOC_MAGIC   'O'
+#define FBIOPUT_OSD_CURSOR	\
+	_IOWR(FB_IOC_MAGIC, 0x0,  struct fb_cursor_user)
 /* OSD color definition */
 #define KEYCOLOR_FLAG_TARGET  1
 #define KEYCOLOR_FLAG_ONHOLD  2
@@ -240,6 +244,8 @@ struct fb_geometry_s {
 	u32 height;
 	u32 canvas_idx;
 	u32 addr;
+	u32 xres;
+	u32 yres;
 };
 
 struct osd_scale_s {
@@ -272,9 +278,20 @@ struct osd_fence_map_s {
 	u32 yres;
 	s32 in_fd;
 	s32 out_fd;
-	u32 val;
-	struct sync_fence *in_fence;
-	struct files_struct *files;
+	u32 ext_addr;
+	u32 format;
+	u32 width;
+	u32 height;
+	u32 op;
+	u32 compose_type;
+	u32 dst_x;
+	u32 dst_y;
+	u32 dst_w;
+	u32 dst_h;
+	int byte_stride;
+	int pxiel_stride;
+	u32 reserve;
+	struct fence *in_fence;
 };
 
 struct afbcd_data_s {
@@ -295,11 +312,15 @@ struct hw_list_s {
 struct hw_para_s {
 	struct pandata_s pandata[HW_OSD_COUNT];
 	struct pandata_s dispdata[HW_OSD_COUNT];
+	struct pandata_s dispdata_backup[HW_OSD_COUNT];
 	struct pandata_s scaledata[HW_OSD_COUNT];
 	struct pandata_s free_src_data[HW_OSD_COUNT];
 	struct pandata_s free_dst_data[HW_OSD_COUNT];
+	struct pandata_s free_src_data_backup[HW_OSD_COUNT];
+	struct pandata_s free_dst_data_backup[HW_OSD_COUNT];
 	/* struct pandata_s rotation_pandata[HW_OSD_COUNT]; */
 	struct pandata_s cursor_dispdata[HW_OSD_COUNT];
+	u32 buffer_alloc[HW_OSD_COUNT];
 
 	u32 gbl_alpha[HW_OSD_COUNT];
 	u32 color_key[HW_OSD_COUNT];
@@ -311,16 +332,20 @@ struct hw_para_s {
 #endif
 	struct osd_scale_s scale[HW_OSD_COUNT];
 	struct osd_scale_s free_scale[HW_OSD_COUNT];
+	struct osd_scale_s free_scale_backup[HW_OSD_COUNT];
 	u32 free_scale_enable[HW_OSD_COUNT];
+	u32 free_scale_enable_backup[HW_OSD_COUNT];
 	struct fb_geometry_s fb_gem[HW_OSD_COUNT];
 	const struct color_bit_define_s *color_info[HW_OSD_COUNT];
-	u32 scan_mode;
+	const struct color_bit_define_s *color_backup[HW_OSD_COUNT];
+	u32 scan_mode[HW_OSD_COUNT];
 	u32 order;
 	struct osd_3d_mode_s mode_3d[HW_OSD_COUNT];
 	u32 updated[HW_OSD_COUNT];
 	/* u32 block_windows[HW_OSD_COUNT][HW_OSD_BLOCK_REG_COUNT]; */
 	u32 block_mode[HW_OSD_COUNT];
 	u32 free_scale_mode[HW_OSD_COUNT];
+	u32 free_scale_mode_backup[HW_OSD_COUNT];
 	u32 osd_reverse[HW_OSD_COUNT];
 	/* struct osd_rotate_s rotate[HW_OSD_COUNT]; */
 	struct hw_list_s reg[HW_OSD_COUNT][HW_REG_INDEX_MAX];
@@ -334,6 +359,20 @@ struct hw_para_s {
 	u32 hw_reset_flag;
 	struct afbcd_data_s osd_afbcd[HW_OSD_COUNT];
 	u32 urgent[HW_OSD_COUNT];
+	u32 osd_fifo[HW_OSD_COUNT];
+	u32 osd_deband_enable;
+	u32 osd_fps;
+	u32 osd_fps_start;
+	u32 osd_display_debug;
+	char __iomem *screen_base[HW_OSD_COUNT];
+	u32 screen_size[HW_OSD_COUNT];
+	char __iomem *screen_base_backup[HW_OSD_COUNT];
+	u32 screen_size_backup[HW_OSD_COUNT];
+	u32 osd_clear[HW_OSD_COUNT];
+	u32 vinfo_width;
+	u32 vinfo_height;
+	u32 fb_drvier_probe;
 };
+
 
 #endif /* _OSD_H_ */

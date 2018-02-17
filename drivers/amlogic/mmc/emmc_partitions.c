@@ -33,6 +33,7 @@
 #include <linux/amlogic/cpu_version.h>
 #include <linux/amlogic/iomap.h>
 #include <linux/amlogic/sd.h>
+#include "emmc_key.h"
 
 #define DTB_NAME	"dtb"
 #define	SZ_1M	0x00100000
@@ -53,6 +54,7 @@ int amlmmc_dtb_write(struct mmc_card *card,
 	int ret = 0, start_blk, size, blk_cnt;
 	int bit = card->csd.read_blkbits;
 	unsigned char *src = NULL;
+	unsigned char *buffer = NULL;
 
 	if (len > CONFIG_DTB_SIZE) {
 		pr_err("%s dtb data len too much", __func__);
@@ -63,22 +65,34 @@ int amlmmc_dtb_write(struct mmc_card *card,
 		ret = -EINVAL;
 		return ret;
 	}
+
+	buffer = kmalloc(DTB_CELL_SIZE, GFP_KERNEL);
+	if (buffer == NULL) {
+		pr_err("%s kmalloc dtb cell failed\n", __func__);
+		buffer = kmalloc(DTB_CELL_SIZE, GFP_DMA);
+		if (buffer == NULL) {
+			pr_err("%s retry kmalloc dtb cell failed\n", __func__);
+			return -ENOMEM;
+		}
+	}
 	start_blk >>= bit;
 	size = CONFIG_DTB_SIZE;
 	blk_cnt = size>>bit;
-	src = (unsigned char *)buf;
-	do {
-		ret = mmc_write_internal(card, start_blk, EMMC_BLOCK_SIZE, src);
+	src = (unsigned char *)buffer;
+	while (blk_cnt != 0) {
+		memcpy(src, buf, DTB_CELL_SIZE);
+		ret = mmc_write_internal(card, start_blk, (DTB_CELL_SIZE>>bit), src);
 		if (ret) {
 			pr_err("%s: save dtb error", __func__);
 			ret = -EFAULT;
+			kfree(buffer);
 			return ret;
 		}
-		start_blk += EMMC_BLOCK_SIZE;
-		blk_cnt -= EMMC_BLOCK_SIZE;
-		src = (unsigned char *)buf + MAX_EMMC_BLOCK_SIZE;
-	} while (blk_cnt != 0);
-
+		start_blk += (DTB_CELL_SIZE>>bit);
+		blk_cnt -= (DTB_CELL_SIZE>>bit);
+		buf += DTB_CELL_SIZE;
+	}
+	kfree(buffer);
 	return ret;
 }
 
@@ -88,6 +102,7 @@ int amlmmc_dtb_read(struct mmc_card *card,
 	int ret = 0, start_blk, size, blk_cnt;
 	int bit = card->csd.read_blkbits;
 	unsigned char *dst = NULL;
+	unsigned char *buffer = NULL;
 
 	if (len > CONFIG_DTB_SIZE) {
 		pr_err("%s dtb data len too much", __func__);
@@ -101,21 +116,34 @@ int amlmmc_dtb_read(struct mmc_card *card,
 		return ret;
 	}
 
+	buffer = kmalloc(DTB_CELL_SIZE, GFP_KERNEL);
+	if (buffer == NULL) {
+		pr_err("%s kmalloc dtb cell failed\n", __func__);
+		buffer = kmalloc(DTB_CELL_SIZE, GFP_DMA);
+		if (buffer == NULL) {
+			pr_err("%s retry kmalloc dtb cell failed\n", __func__);
+			return -ENOMEM;
+		}
+	}
 	start_blk >>= bit;
 	size = CONFIG_DTB_SIZE;
 	blk_cnt = size>>bit;
-	dst = (unsigned char *)buf;
-	do {
-		ret = mmc_read_internal(card, start_blk, EMMC_BLOCK_SIZE, dst);
+	dst = (unsigned char *)buffer;
+	while (blk_cnt != 0) {
+		memset(buffer, 0x0, DTB_CELL_SIZE);
+		ret = mmc_read_internal(card, start_blk, (DTB_CELL_SIZE>>bit), dst);
 		if (ret) {
 			pr_err("%s read dtb error", __func__);
 			ret = -EFAULT;
+			kfree(buffer);
 			return ret;
 		}
-		start_blk += EMMC_BLOCK_SIZE;
-		blk_cnt -= EMMC_BLOCK_SIZE;
-		dst = (unsigned char *)buf + MAX_EMMC_BLOCK_SIZE;
-	} while (blk_cnt != 0);
+		start_blk += (DTB_CELL_SIZE>>bit);
+		blk_cnt -= (DTB_CELL_SIZE>>bit);
+		memcpy(buf, dst, DTB_CELL_SIZE);
+		buf += DTB_CELL_SIZE;
+	}
+	kfree(buffer);
 	return ret;
 }
 static CLASS_ATTR(emmcdtb, 0644, NULL, NULL);
@@ -554,17 +582,17 @@ static int mmc_read_partition_tbl(struct mmc_card *card,
 		if (strncmp(pt_fmt->magic, MMC_PARTITIONS_MAGIC,
 					sizeof(pt_fmt->magic)) != 0) {
 
-			print_tmp("magic error: %s\n",
+			pr_info("magic error: %s\n",
 					(pt_fmt->magic)?pt_fmt->magic:"NULL");
 
 		} else if ((pt_fmt->part_num < 0)
 				|| (pt_fmt->part_num > MAX_MMC_PART_NUM)) {
 
-			print_tmp("partition number error: %d\n",
+			pr_info("partition number error: %d\n",
 					pt_fmt->part_num);
 
 		} else {
-			print_tmp(
+			pr_info(
 				"checksum error: pt_fmt->checksum=%d,calc_result=%d\n",
 				pt_fmt->checksum,
 				mmc_partition_tbl_checksum_calc(
@@ -625,6 +653,8 @@ static struct hd_struct *add_emmc_each_part(struct gendisk *disk, int partno,
 	p->nr_sects = len;
 	p->partno = partno;
 	p->policy = get_disk_ro(disk);
+	p->info = alloc_part_info(disk);
+	sprintf(p->info->volname, "%s", pname);
 
 	dname = dev_name(ddev);
 	dev_set_name(pdev, "%s", pname);
@@ -709,7 +739,7 @@ static const struct file_operations card_proc_fops = {
 	.open = card_proc_open,
 	.read = seq_read,
 	.llseek = seq_lseek,
-	.release = seq_release,
+	.release = single_release,
 };
 
 static int add_emmc_partition(struct gendisk *disk,
@@ -956,6 +986,9 @@ int aml_emmc_partition_ops(struct mmc_card *card, struct gendisk *disk)
 		ret = add_emmc_partition(disk, pt_fmt);
 	}
 	mmc_release_host(card->host);
+
+	if (ret == 0) /* ok */
+		ret = emmc_key_init(card);
 
 	amlmmc_dtb_init(card);
 

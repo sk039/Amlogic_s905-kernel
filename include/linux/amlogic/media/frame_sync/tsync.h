@@ -34,7 +34,8 @@ enum avevent_e {
 	AUDIO_RESUME,
 	AUDIO_STOP,
 	AUDIO_TSTAMP_DISCONTINUITY,
-	AUDIO_PRE_START
+	AUDIO_PRE_START,
+	AUDIO_WAIT
 };
 
 enum tsync_mode_e {
@@ -91,6 +92,8 @@ extern void tsync_set_sync_adiscont_diff(u32 discontinue_diff);
 
 extern void tsync_set_sync_vdiscont_diff(u32 discontinue_diff);
 extern int tsync_set_apts(unsigned int pts);
+
+extern void tsync_init(void);
 
 extern void tsync_set_automute_on(int automute_on);
 

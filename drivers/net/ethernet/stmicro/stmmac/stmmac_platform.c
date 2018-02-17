@@ -268,9 +268,9 @@ stmmac_probe_config_dt(struct platform_device *pdev, const char **mac)
 	if (of_device_is_compatible(np, "st,spear600-gmac") ||
 		of_device_is_compatible(np, "snps,dwmac-3.50a") ||
 		of_device_is_compatible(np, "snps,dwmac-3.70a") ||
-		of_device_is_compatible(np, "snps,dwmac") ||
+		of_device_is_compatible(np, "snps,dwmac")
 #ifdef CONFIG_AMLOGIC_ETH_PRIVE
-		of_device_is_compatible(np, "amlogic, gxbb-eth-dwmac")
+		|| of_device_is_compatible(np, "amlogic, gxbb-eth-dwmac")
 #endif
 	   ) {
 		/* Note that the max-frame-size parameter as defined in the
@@ -350,6 +350,7 @@ void stmmac_remove_config_dt(struct platform_device *pdev,
 	if (of_phy_is_fixed_link(np))
 		of_phy_deregister_fixed_link(np);
 	of_node_put(plat->phy_node);
+	of_node_put(plat->mdio_node);
 }
 #else
 struct plat_stmmacenet_data *

@@ -361,6 +361,8 @@ struct ge2d_gen_s {
 	unsigned char     vfmt_onoff_en;
 	unsigned int      dp_on_cnt;
 	unsigned int      dp_off_cnt;
+	unsigned int      fifo_size;
+	unsigned int      burst_ctrl;
 };
 
 struct ge2d_src1_data_s {
@@ -380,8 +382,15 @@ struct ge2d_src1_data_s {
 	unsigned char     mode_8b_sel;
 	unsigned char     lut_en;
 	unsigned char     deep_color;
+	unsigned char     mult_rounding;
+	unsigned char     alpha_conv_mode0;
+	unsigned char     alpha_conv_mode1;
+	unsigned char     color_conv_mode0;
+	unsigned char     color_conv_mode1;
 	unsigned int      def_color;
 	unsigned int      format_all;
+	unsigned int      phy_addr;
+	unsigned int      stride;
 };
 
 struct ge2d_src1_gen_s {
@@ -430,6 +439,10 @@ struct ge2d_src2_dst_data_s {
 	unsigned char	dst2_discard_mode;
 	unsigned char	dst2_enable;
 
+	unsigned int src2_phyaddr;
+	unsigned int src2_stride;
+	unsigned int dst_phyaddr;
+	unsigned int dst_stride;
 };
 
 struct ge2d_src2_dst_gen_s {
@@ -487,6 +500,7 @@ struct ge2d_dp_gen_s {
 	int               matrix_offset[3];
 	int               matrix_coef[9];
 
+	unsigned char     src1_gb_alpha_en;
 	unsigned char     src1_gb_alpha;
 	unsigned int      alu_const_color;
 
@@ -572,6 +586,7 @@ struct ge2d_cmd_s {
 	unsigned int     src2_buffer;
 	unsigned char    release_flag;
 	unsigned char    wait_done_flag;
+	unsigned char    hang_flag;
 };
 
 struct ge2d_config_s {
@@ -621,6 +636,7 @@ struct ge2d_context_s {
 	wait_queue_head_t	cmd_complete;
 	int				queue_dirty;
 	int				queue_need_recycle;
+	int				ge2d_request_exit;
 	spinlock_t		lock;	/* for get and release item. */
 };
 
@@ -650,6 +666,8 @@ struct src_dst_para_s {
 	int  canvas_index;
 	int  bpp;
 	int  ge2d_color_index;
+	int  phy_addr;
+	int  stride;
 };
 
 enum ge2d_op_type_e {
@@ -801,6 +819,107 @@ struct compat_config_para_ex_s {
 };
 #endif
 
+struct config_planes_ion_s {
+	unsigned long addr;
+	unsigned int w;
+	unsigned int h;
+	int shared_fd;
+};
+
+#ifdef CONFIG_COMPAT
+struct compat_config_planes_ion_s {
+	compat_uptr_t addr;
+	unsigned int w;
+	unsigned int h;
+	int shared_fd;
+};
+#endif
+
+struct config_para_ex_ion_s {
+	struct src_dst_para_ex_s src_para;
+	struct src_dst_para_ex_s src2_para;
+	struct src_dst_para_ex_s dst_para;
+
+	/* key mask */
+	struct src_key_ctrl_s  src_key;
+	struct src_key_ctrl_s  src2_key;
+
+	unsigned char src1_cmult_asel;
+	unsigned char src2_cmult_asel;
+	int alu_const_color;
+	unsigned char src1_gb_alpha_en;
+	unsigned int src1_gb_alpha;
+	unsigned int op_mode;
+	unsigned char bitmask_en;
+	unsigned char bytemask_only;
+	unsigned int  bitmask;
+	unsigned char dst_xy_swap;
+
+	/* scaler and phase related */
+	unsigned int hf_init_phase;
+	int hf_rpt_num;
+	unsigned int hsc_start_phase_step;
+	int hsc_phase_slope;
+	unsigned int vf_init_phase;
+	int vf_rpt_num;
+	unsigned int vsc_start_phase_step;
+	int vsc_phase_slope;
+	unsigned char src1_vsc_phase0_always_en;
+	unsigned char src1_hsc_phase0_always_en;
+	/* 1bit, 0: using minus, 1: using repeat data */
+	unsigned char src1_hsc_rpt_ctrl;
+	/* 1bit, 0: using minus  1: using repeat data */
+	unsigned char src1_vsc_rpt_ctrl;
+
+	/* canvas info */
+	struct config_planes_ion_s src_planes[4];
+	struct config_planes_ion_s src2_planes[4];
+	struct config_planes_ion_s dst_planes[4];
+};
+
+#ifdef CONFIG_COMPAT
+struct compat_config_para_ex_ion_s {
+	struct src_dst_para_ex_s src_para;
+	struct src_dst_para_ex_s src2_para;
+	struct src_dst_para_ex_s dst_para;
+
+	/* key mask */
+	struct src_key_ctrl_s  src_key;
+	struct src_key_ctrl_s  src2_key;
+
+	unsigned char src1_cmult_asel;
+	unsigned char src2_cmult_asel;
+	int alu_const_color;
+	unsigned char src1_gb_alpha_en;
+	unsigned int src1_gb_alpha;
+	unsigned int op_mode;
+	unsigned char bitmask_en;
+	unsigned char bytemask_only;
+	unsigned int  bitmask;
+	unsigned char dst_xy_swap;
+
+	/* scaler and phase related */
+	unsigned int hf_init_phase;
+	int hf_rpt_num;
+	unsigned int hsc_start_phase_step;
+	int hsc_phase_slope;
+	unsigned int vf_init_phase;
+	int vf_rpt_num;
+	unsigned int vsc_start_phase_step;
+	int vsc_phase_slope;
+	unsigned char src1_vsc_phase0_always_en;
+	unsigned char src1_hsc_phase0_always_en;
+	/* 1bit, 0: using minus, 1: using repeat data */
+	unsigned char src1_hsc_rpt_ctrl;
+	/* 1bit, 0: using minus  1: using repeat data */
+	unsigned char src1_vsc_rpt_ctrl;
+
+	/* canvas info */
+	struct compat_config_planes_ion_s src_planes[4];
+	struct compat_config_planes_ion_s src2_planes[4];
+	struct compat_config_planes_ion_s dst_planes[4];
+};
+#endif
 #define GE2D_IOC_MAGIC  'G'
 
 #define GE2D_CONFIG		_IOW(GE2D_IOC_MAGIC, 0x00, struct config_para_s)
@@ -823,6 +942,15 @@ struct compat_config_para_ex_s {
 	_IOW(GE2D_IOC_MAGIC, 0x02, struct compat_config_para_s)
 #endif
 
+
+#define GE2D_CONFIG_EX_ION	 \
+	_IOW(GE2D_IOC_MAGIC, 0x03,  struct config_para_ex_ion_s)
+
+#ifdef CONFIG_COMPAT
+#define GE2D_CONFIG_EX32_ION  \
+	_IOW(GE2D_IOC_MAGIC, 0x03,  struct compat_config_para_ex_ion_s)
+#endif
+
 extern void ge2d_set_src1_data(struct ge2d_src1_data_s *cfg);
 extern void ge2d_set_src1_gen(struct ge2d_src1_gen_s *cfg);
 extern void ge2d_set_src2_dst_data(struct ge2d_src2_dst_data_s *cfg);
@@ -841,6 +969,8 @@ extern int ge2d_context_config(struct ge2d_context_s *context,
 			       struct config_para_s *ge2d_config);
 extern int ge2d_context_config_ex(struct ge2d_context_s *context,
 				  struct config_para_ex_s *ge2d_config);
+extern int ge2d_context_config_ex_ion(struct ge2d_context_s *context,
+			   struct config_para_ex_ion_s *ge2d_config);
 extern struct ge2d_context_s *create_ge2d_work_queue(void);
 extern int destroy_ge2d_work_queue(struct ge2d_context_s *wq);
 extern int ge2d_wq_remove_config(struct ge2d_context_s *wq);
@@ -858,7 +988,7 @@ extern struct ge2d_src2_dst_gen_s
 extern struct ge2d_dp_gen_s *ge2d_wq_get_dp_gen(struct ge2d_context_s *wq);
 extern struct ge2d_cmd_s *ge2d_wq_get_cmd(struct ge2d_context_s *wq);
 extern int ge2d_wq_add_work(struct ge2d_context_s *wq);
-
+void ge2d_canv_config(u32 index, u32 addr, u32 stride);
 
 #include "ge2d_func.h"
 

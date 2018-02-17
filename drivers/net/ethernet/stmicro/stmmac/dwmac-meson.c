@@ -34,9 +34,14 @@ struct meson_dwmac {
 
 static void meson6_dwmac_fix_mac_speed(void *priv, unsigned int speed)
 {
+#ifdef CONFIG_AMLOGIC_ETH_PRIVE
+
+#else
 	struct meson_dwmac *dwmac = priv;
 	unsigned int val;
-
+#ifdef CONFIG_AMLOGIC_ETH_PRIVE
+	return;
+#endif
 	val = readl(dwmac->reg);
 
 	switch (speed) {
@@ -49,6 +54,7 @@ static void meson6_dwmac_fix_mac_speed(void *priv, unsigned int speed)
 	}
 
 	writel(val, dwmac->reg);
+#endif
 }
 
 #ifdef CONFIG_AMLOGIC_ETH_PRIVE
@@ -89,19 +95,23 @@ static void __iomem *network_interface_setup(struct platform_device *pdev)
 	pr_debug("REG0:REG1 = %p :%p\n", PREG_ETH_REG0, PREG_ETH_REG1);
 
 	if (!of_property_read_u32(np, "internal_phy", &internal_phy)) {
+		res = NULL;
 		res = platform_get_resource(pdev, IORESOURCE_MEM, 2);
+		if (res) {
 		addr = devm_ioremap_resource(dev, res);
 		PREG_ETH_REG2 = addr;
 		PREG_ETH_REG3 = addr + 4;
 		PREG_ETH_REG4 = addr + 8;
+		}
 		if (internal_phy == 1) {
 			pr_debug("internal phy\n");
 			/* Get mec mode & ting value  set it in cbus2050 */
 			if (of_property_read_u32(np, "mc_val_internal_phy",
 						 &mc_val)) {
 			} else {
-				writel(mc_val, addr);
+				writel(mc_val, PREG_ETH_REG0);
 			}
+			if (res) {
 			writel(ETH_REG2_REVERSED | INTERNAL_PHY_ID,
 			       PREG_ETH_REG2);
 			writel(PHY_ENABLE | USE_PHY_IP | CLK_IN_EN |
@@ -109,20 +119,25 @@ static void __iomem *network_interface_setup(struct platform_device *pdev)
 					ETH_REG3_19_RESVERD	| CFG_PHY_ADDR |
 					CFG_MODE | CFG_EN_HIGH |
 					ETH_REG3_2_RESERVED, PREG_ETH_REG3);
+			}
 			pin_ctl = devm_pinctrl_get_select
 				(&pdev->dev, "internal_eth_pins");
 		} else {
 			/* Get mec mode & ting value  set it in cbus2050 */
 			if (of_property_read_u32(np, "mc_val_external_phy",
-						 &mc_val))
-				writel(mc_val, addr);
+						 &mc_val)) {
+			} else {
+				writel(mc_val, PREG_ETH_REG0);
+			}
 			if (!of_property_read_u32(np, "cali_val", &cali_val))
-				writel(cali_val, addr + 4);
+				writel(cali_val, PREG_ETH_REG1);
+			if (res) {
 			writel(ETH_REG2_REVERSED | INTERNAL_PHY_ID,
 			       PREG_ETH_REG2);
 			writel(CLK_IN_EN | ETH_REG3_19_RESVERD	|
 					CFG_PHY_ADDR | CFG_MODE | CFG_EN_HIGH |
 					ETH_REG3_2_RESERVED, PREG_ETH_REG3);
+			}
 			/* pull reset pin for resetting phy  */
 			gdesc = gpiod_get(&pdev->dev, "rst_pin",
 					  GPIOD_FLAGS_BIT_DIR_OUT);
@@ -148,7 +163,7 @@ static void __iomem *network_interface_setup(struct platform_device *pdev)
 		pin_ctl = devm_pinctrl_get_select(&pdev->dev, "eth_pins");
 	}
 	pr_debug("Ethernet: pinmux setup ok\n");
-	return addr;
+	return PREG_ETH_REG0;
 }
 #endif
 static int meson6_dwmac_probe(struct platform_device *pdev)
@@ -156,7 +171,6 @@ static int meson6_dwmac_probe(struct platform_device *pdev)
 	struct plat_stmmacenet_data *plat_dat;
 	struct stmmac_resources stmmac_res;
 	struct meson_dwmac *dwmac;
-	struct resource *res;
 	int ret;
 
 	ret = stmmac_get_platform_resources(pdev, &stmmac_res);
@@ -173,23 +187,25 @@ static int meson6_dwmac_probe(struct platform_device *pdev)
 		goto err_remove_config_dt;
 	}
 
+#ifdef CONFIG_AMLOGIC_ETH_PRIVE
+	dwmac->reg = network_interface_setup(pdev);
+	/* Custom initialisation (if needed) */
+	if (plat_dat->init) {
+		ret = plat_dat->init(pdev, plat_dat->bsp_priv);
+		if (ret)
+			return ret;
+	}
+#else
+	struct resource *res;
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 1);
 	dwmac->reg = devm_ioremap_resource(&pdev->dev, res);
 	if (IS_ERR(dwmac->reg)) {
 		ret = PTR_ERR(dwmac->reg);
 		goto err_remove_config_dt;
 	}
-
+#endif
 	plat_dat->bsp_priv = dwmac;
 	plat_dat->fix_mac_speed = meson6_dwmac_fix_mac_speed;
-#ifdef CONFIG_AMLOGIC_ETH_PRIVE
-	network_interface_setup(pdev);	/* Custom initialisation (if needed) */
-	if (plat_dat->init) {
-		ret = plat_dat->init(pdev, plat_dat->bsp_priv);
-		if (ret)
-			return ret;
-	}
-#endif
 
 	ret = stmmac_dvr_probe(&pdev->dev, plat_dat, &stmmac_res);
 	if (ret)

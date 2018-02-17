@@ -15,10 +15,12 @@
  *
  */
 
+#define DEBUG
 #include <linux/module.h>
 #include <linux/amlogic/media/frame_sync/tsync.h>
 #include <linux/amlogic/media/utils/vdec_reg.h>
 #include <linux/amlogic/media/registers/register.h>
+#include <linux/amlogic/media/vout/vout_notify.h>
 
 
 u32 acc_apts_inc;
@@ -32,7 +34,7 @@ static u32 system_time_up;
 static u32 audio_pts_up;
 static u32 audio_pts_started;
 static u32 first_vpts;
-static u32 first_checkin_vpts;
+static u32 first_checkin_vpts = 0xffffffff;
 static u32 first_apts;
 
 static u32 system_time_scale_base = 1;
@@ -49,31 +51,31 @@ void set_timestamp_inc_factor(u32 factor)
 
 u32 timestamp_vpts_get(void)
 {
-	return (u32) READ_MPEG_REG(VIDEO_PTS);
+	return (u32) READ_PARSER_REG(VIDEO_PTS);
 }
 EXPORT_SYMBOL(timestamp_vpts_get);
 
 void timestamp_vpts_set(u32 pts)
 {
-	WRITE_MPEG_REG(VIDEO_PTS, pts);
+	WRITE_PARSER_REG(VIDEO_PTS, pts);
 }
 EXPORT_SYMBOL(timestamp_vpts_set);
 
 void timestamp_vpts_inc(s32 val)
 {
-	WRITE_MPEG_REG(VIDEO_PTS, READ_MPEG_REG(VIDEO_PTS) + val);
+	WRITE_PARSER_REG(VIDEO_PTS, READ_PARSER_REG(VIDEO_PTS) + val);
 }
 EXPORT_SYMBOL(timestamp_vpts_inc);
 
 u32 timestamp_apts_get(void)
 {
-	return (u32) READ_MPEG_REG(AUDIO_PTS);
+	return (u32) READ_PARSER_REG(AUDIO_PTS);
 }
 EXPORT_SYMBOL(timestamp_apts_get);
 
 void timestamp_apts_set(u32 pts)
 {
-	WRITE_MPEG_REG(AUDIO_PTS, pts);
+	WRITE_PARSER_REG(AUDIO_PTS, pts);
 }
 EXPORT_SYMBOL(timestamp_apts_set);
 
@@ -83,7 +85,7 @@ void timestamp_apts_inc(s32 inc)
 #ifdef MODIFY_TIMESTAMP_INC_WITH_PLL
 		inc = inc * timestamp_inc_factor / PLL_FACTOR;
 #endif
-		WRITE_MPEG_REG(AUDIO_PTS, READ_MPEG_REG(AUDIO_PTS) + inc);
+		WRITE_PARSER_REG(AUDIO_PTS, READ_PARSER_REG(AUDIO_PTS) + inc);
 	}
 }
 EXPORT_SYMBOL(timestamp_apts_inc);
@@ -123,7 +125,7 @@ EXPORT_SYMBOL(timestamp_pcrscr_set);
 void timestamp_firstvpts_set(u32 pts)
 {
 	first_vpts = pts;
-	pr_info("video first pts = %x\n", first_vpts);
+	pr_debug("video first pts = %x\n", first_vpts);
 }
 EXPORT_SYMBOL(timestamp_firstvpts_set);
 
@@ -136,7 +138,7 @@ EXPORT_SYMBOL(timestamp_firstvpts_get);
 void timestamp_checkin_firstvpts_set(u32 pts)
 {
 	first_checkin_vpts = pts;
-	pr_info("video first checkin pts = %x\n", first_checkin_vpts);
+	pr_debug("video first checkin pts = %x\n", first_checkin_vpts);
 }
 EXPORT_SYMBOL(timestamp_checkin_firstvpts_set);
 
@@ -199,6 +201,19 @@ void timestamp_pcrscr_set_adj(s32 inc)
 	system_time_inc_adj = inc;
 }
 EXPORT_SYMBOL(timestamp_pcrscr_set_adj);
+
+void timestamp_pcrscr_set_adj_pcr(s32 inc)
+{
+	const struct vinfo_s *info = get_current_vinfo();
+
+	if (inc != 0) {
+		system_time_inc_adj =
+			900 * info->sync_duration_den /
+			(info->sync_duration_num*inc);
+	} else
+		system_time_inc_adj = 0;
+}
+EXPORT_SYMBOL(timestamp_pcrscr_set_adj_pcr);
 
 void timestamp_pcrscr_enable(u32 enable)
 {

@@ -255,7 +255,7 @@ struct kmem_cache *find_mergeable(size_t size, size_t align,
 {
 	struct kmem_cache *s;
 
-	if (slab_nomerge || (flags & SLAB_NEVER_MERGE))
+	if (slab_nomerge)
 		return NULL;
 
 	if (ctor)
@@ -265,6 +265,9 @@ struct kmem_cache *find_mergeable(size_t size, size_t align,
 	align = calculate_alignment(flags, align, size);
 	size = ALIGN(size, align);
 	flags = kmem_cache_flags(size, flags, name, NULL);
+
+	if (flags & SLAB_NEVER_MERGE)
+		return NULL;
 
 	list_for_each_entry_reverse(s, &slab_caches, list) {
 		if (slab_unmergeable(s))
@@ -455,6 +458,9 @@ EXPORT_SYMBOL(kmem_cache_create);
 static int shutdown_cache(struct kmem_cache *s,
 		struct list_head *release, bool *need_rcu_barrier)
 {
+	/* free asan quarantined objects */
+	kasan_cache_shutdown(s);
+
 	if (__kmem_cache_shutdown(s) != 0)
 		return -EBUSY;
 
@@ -573,6 +579,29 @@ void memcg_deactivate_kmem_caches(struct mem_cgroup *memcg)
 	get_online_cpus();
 	get_online_mems();
 
+#ifdef CONFIG_SLUB
+	/*
+	 * In case of SLUB, we need to disable empty slab caching to
+	 * avoid pinning the offline memory cgroup by freeable kmem
+	 * pages charged to it. SLAB doesn't need this, as it
+	 * periodically purges unused slabs.
+	 */
+	mutex_lock(&slab_mutex);
+	list_for_each_entry(s, &slab_caches, list) {
+		c = is_root_cache(s) ? cache_from_memcg_idx(s, idx) : NULL;
+		if (c) {
+			c->cpu_partial = 0;
+			c->min_partial = 0;
+		}
+	}
+	mutex_unlock(&slab_mutex);
+	/*
+	 * kmem_cache->cpu_partial is checked locklessly (see
+	 * put_cpu_partial()). Make sure the change is visible.
+	 */
+	synchronize_sched();
+#endif
+
 	mutex_lock(&slab_mutex);
 	list_for_each_entry(s, &slab_caches, list) {
 		if (!is_root_cache(s))
@@ -584,7 +613,7 @@ void memcg_deactivate_kmem_caches(struct mem_cgroup *memcg)
 		if (!c)
 			continue;
 
-		__kmem_cache_shrink(c, true);
+		__kmem_cache_shrink(c);
 		arr->entries[idx] = NULL;
 	}
 	mutex_unlock(&slab_mutex);
@@ -715,7 +744,6 @@ void kmem_cache_destroy(struct kmem_cache *s)
 	get_online_cpus();
 	get_online_mems();
 
-	kasan_cache_destroy(s);
 	mutex_lock(&slab_mutex);
 
 	s->refcount--;
@@ -755,7 +783,7 @@ int kmem_cache_shrink(struct kmem_cache *cachep)
 	get_online_cpus();
 	get_online_mems();
 	kasan_cache_shrink(cachep);
-	ret = __kmem_cache_shrink(cachep, false);
+	ret = __kmem_cache_shrink(cachep);
 	put_online_mems();
 	put_online_cpus();
 	return ret;
@@ -1096,7 +1124,13 @@ static void print_slabinfo_header(struct seq_file *m)
 #else
 	seq_puts(m, "slabinfo - version: 2.1\n");
 #endif
+#ifdef CONFIG_AMLOGIC_MODIFY
+	/* add total bytes for each slab */
+	seq_puts(m, "# name                        <active_objs> <num_objs> ");
+	seq_puts(m, "<objsize> <objperslab> <pagesperslab> <total bytes>");
+#else
 	seq_puts(m, "# name            <active_objs> <num_objs> <objsize> <objperslab> <pagesperslab>");
+#endif /* CONFIG_AMLOGIC_MODIFY */
 	seq_puts(m, " : tunables <limit> <batchcount> <sharedfactor>");
 	seq_puts(m, " : slabdata <active_slabs> <num_slabs> <sharedavail>");
 #ifdef CONFIG_DEBUG_SLAB
@@ -1146,15 +1180,28 @@ memcg_accumulate_slabinfo(struct kmem_cache *s, struct slabinfo *info)
 static void cache_show(struct kmem_cache *s, struct seq_file *m)
 {
 	struct slabinfo sinfo;
+#ifdef CONFIG_AMLOGIC_MODIFY
+	char name[32];
+	long total;
+#endif
 
 	memset(&sinfo, 0, sizeof(sinfo));
 	get_slabinfo(s, &sinfo);
 
 	memcg_accumulate_slabinfo(s, &sinfo);
 
+#ifdef CONFIG_AMLOGIC_MODIFY
+	strncpy(name, cache_name(s), 31);
+	total = sinfo.num_objs * s->size;
+	seq_printf(m, "%-31s %6lu %6lu %6u %4u %4d %8lu",
+		   name, sinfo.active_objs, sinfo.num_objs, s->size,
+		   sinfo.objects_per_slab, (1 << sinfo.cache_order),
+		   total);
+#else
 	seq_printf(m, "%-17s %6lu %6lu %6u %4u %4d",
 		   cache_name(s), sinfo.active_objs, sinfo.num_objs, s->size,
 		   sinfo.objects_per_slab, (1 << sinfo.cache_order));
+#endif /* CONFIG_AMLOGIC_MODIFY */
 
 	seq_printf(m, " : tunables %4u %4u %4u",
 		   sinfo.limit, sinfo.batchcount, sinfo.shared);

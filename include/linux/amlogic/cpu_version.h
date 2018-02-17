@@ -18,22 +18,25 @@
 #ifndef __PLAT_MESON_CPU_H
 #define __PLAT_MESON_CPU_H
 
+#define MESON_CPU_MAJOR_ID_M8B		0x1B
 #define MESON_CPU_MAJOR_ID_GXBB		0x1F
 #define MESON_CPU_MAJOR_ID_GXTVBB	0x20
 #define MESON_CPU_MAJOR_ID_GXL		0x21
 #define MESON_CPU_MAJOR_ID_GXM		0x22
 #define MESON_CPU_MAJOR_ID_TXL		0x23
+#define MESON_CPU_MAJOR_ID_TXLX		0x24
+#define MESON_CPU_MAJOR_ID_AXG		0x25
+#define MESON_CPU_MAJOR_ID_GXLX		0x26
+#define MESON_CPU_MAJOR_ID_TXHD		0x27
 
 #define MESON_CPU_VERSION_LVL_MAJOR	0
 #define MESON_CPU_VERSION_LVL_MINOR	1
 #define MESON_CPU_VERSION_LVL_PACK	2
 #define MESON_CPU_VERSION_LVL_MISC	3
 #define MESON_CPU_VERSION_LVL_MAX	MESON_CPU_VERSION_LVL_MISC
-extern unsigned int system_serial_low0;
-extern unsigned int system_serial_low1;
-extern unsigned int system_serial_high0;
-extern unsigned int system_serial_high1;
 
+#define CHIPID_LEN 16
+void cpuinfo_get_chipid(unsigned char *cid, unsigned int size);
 int  meson_cpu_version_init(void);
 #ifdef CONFIG_AMLOGIC_CPU_VERSION
 int get_meson_cpu_version(int level);
@@ -66,6 +69,11 @@ static inline u32 get_cpu_package(void)
 static inline bool package_id_is(unsigned int id)
 {
 	return get_cpu_package() == id;
+}
+
+static inline bool is_meson_m8b_cpu(void)
+{
+	return get_cpu_type() == MESON_CPU_MAJOR_ID_M8B;
 }
 
 static inline bool is_meson_gxbb_cpu(void)
@@ -124,9 +132,38 @@ static inline bool is_meson_txl_cpu(void)
 	return get_cpu_type() == MESON_CPU_MAJOR_ID_TXL;
 }
 
+static inline bool is_meson_txlx_cpu(void)
+{
+	return get_cpu_type() == MESON_CPU_MAJOR_ID_TXLX;
+}
+
+static inline bool is_meson_axg_cpu(void)
+{
+	return get_cpu_type() == MESON_CPU_MAJOR_ID_AXG;
+}
+
+static inline bool is_meson_gxlx_cpu(void)
+{
+	return get_cpu_type() == MESON_CPU_MAJOR_ID_GXLX;
+}
+
+static inline bool is_meson_txhd_cpu(void)
+{
+	return get_cpu_type() == MESON_CPU_MAJOR_ID_TXHD;
+}
+
 static inline bool cpu_after_eq(unsigned int id)
 {
 	return get_cpu_type() >= id;
 }
 
+static inline bool is_meson_txlx_package_962X(void)
+{
+	return is_meson_txlx_cpu() && package_id_is(0x10);
+}
+
+static inline bool is_meson_txlx_package_962E(void)
+{
+	return is_meson_txlx_cpu() && package_id_is(0x20);
+}
 #endif

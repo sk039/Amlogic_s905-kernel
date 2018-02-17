@@ -41,7 +41,20 @@
 #include <asm/pgtable.h>
 #include <asm/tlbflush.h>
 
-static const char *fault_name(unsigned int esr);
+struct fault_info {
+	int	(*fn)(unsigned long addr, unsigned int esr,
+		      struct pt_regs *regs);
+	int	sig;
+	int	code;
+	const char *name;
+};
+
+static const struct fault_info fault_info[];
+
+static inline const struct fault_info *esr_to_fault_info(unsigned int esr)
+{
+	return fault_info + (esr & 63);
+}
 
 #ifdef CONFIG_KPROBES
 static inline int notify_page_fault(struct pt_regs *regs, unsigned int esr)
@@ -88,21 +101,21 @@ void show_pte(struct mm_struct *mm, unsigned long addr)
 			break;
 
 		pud = pud_offset(pgd, addr);
-		printk(", *pud=%016llx", pud_val(*pud));
+		pr_cont(", *pud=%016llx", pud_val(*pud));
 		if (pud_none(*pud) || pud_bad(*pud))
 			break;
 
 		pmd = pmd_offset(pud, addr);
-		printk(", *pmd=%016llx", pmd_val(*pmd));
+		pr_cont(", *pmd=%016llx", pmd_val(*pmd));
 		if (pmd_none(*pmd) || pmd_bad(*pmd))
 			break;
 
 		pte = pte_offset_map(pmd, addr);
-		printk(", *pte=%016llx", pte_val(*pte));
+		pr_cont(", *pte=%016llx", pte_val(*pte));
 		pte_unmap(pte);
 	} while(0);
 
-	printk("\n");
+	pr_cont("\n");
 }
 
 #ifdef CONFIG_ARM64_HW_AFDBM
@@ -155,6 +168,43 @@ int ptep_set_access_flags(struct vm_area_struct *vma,
 }
 #endif
 
+#ifdef CONFIG_AMLOGIC_USER_FAULT
+static long get_user_pfn(struct mm_struct *mm, unsigned long addr)
+{
+	long pfn = -1;
+	pgd_t *pgd;
+
+	if (!mm)
+		mm = &init_mm;
+
+	pgd = pgd_offset(mm, addr);
+
+	do {
+		pud_t *pud;
+		pmd_t *pmd;
+		pte_t *pte;
+
+		if (pgd_none(*pgd) || pgd_bad(*pgd))
+			break;
+
+		pud = pud_offset(pgd, addr);
+		if (pud_none(*pud) || pud_bad(*pud))
+			break;
+
+		pmd = pmd_offset(pud, addr);
+		if (pmd_none(*pmd) || pmd_bad(*pmd))
+			break;
+
+		pte = pte_offset_map(pmd, addr);
+		pfn = pte_pfn(*pte);
+		pte_unmap(pte);
+	} while (0);
+
+	return pfn;
+}
+#endif /* CONFIG_AMLOGIC_USER_FAULT */
+
+
 static bool is_el1_instruction_abort(unsigned int esr)
 {
 	return ESR_ELx_EC(esr) == ESR_ELx_EC_IABT_CUR;
@@ -187,6 +237,45 @@ static void __do_kernel_fault(struct mm_struct *mm, unsigned long addr,
 	do_exit(SIGKILL);
 }
 
+#ifdef CONFIG_AMLOGIC_USER_FAULT
+void show_all_pfn(struct task_struct *task, struct pt_regs *regs)
+{
+	int i;
+	long pfn1;
+	char s1[10];
+	int top;
+
+	if (compat_user_mode(regs))
+		top = 15;
+	else
+		top = 31;
+	pr_info("reg              value       pfn  ");
+	pr_info("reg              value       pfn\n");
+	for (i = 0; i < top; i++) {
+		pfn1 = get_user_pfn(task->mm, regs->regs[i]);
+		if (pfn1 >= 0)
+			sprintf(s1, "%8lx", pfn1);
+		else
+			sprintf(s1, "--------");
+		pr_info("r%-2d:  %016llx  %s  ", i, regs->regs[i], s1);
+		if (i % 2 == 1)
+			pr_info("\n");
+	}
+	pfn1 = get_user_pfn(task->mm, regs->pc);
+	if (pfn1 >= 0)
+		sprintf(s1, "%8lx", pfn1);
+	else
+		sprintf(s1, "--------");
+	pr_info("pc :  %016llx  %s\n", regs->pc, s1);
+	pfn1 = get_user_pfn(task->mm, regs->sp);
+	if (pfn1 >= 0)
+		sprintf(s1, "%8lx", pfn1);
+	else
+		sprintf(s1, "--------");
+	pr_info("sp :  %016llx  %s\n", regs->sp, s1);
+}
+#endif /* CONFIG_AMLOGIC_USER_FAULT */
+
 /*
  * Something tried to access memory that isn't in our memory map. User mode
  * accesses just cause a SIGSEGV
@@ -196,12 +285,17 @@ static void __do_user_fault(struct task_struct *tsk, unsigned long addr,
 			    struct pt_regs *regs)
 {
 	struct siginfo si;
+	const struct fault_info *inf;
 
 	if (unhandled_signal(tsk, sig) && show_unhandled_signals_ratelimited()) {
+		inf = esr_to_fault_info(esr);
 		pr_info("%s[%d]: unhandled %s (%d) at 0x%08lx, esr 0x%03x\n",
-			tsk->comm, task_pid_nr(tsk), fault_name(esr), sig,
+			tsk->comm, task_pid_nr(tsk), inf->name, sig,
 			addr, esr);
 		show_pte(tsk->mm, addr);
+	#ifdef CONFIG_AMLOGIC_USER_FAULT
+		show_all_pfn(tsk, regs);
+	#endif /* CONFIG_AMLOGIC_USER_FAULT */
 		show_regs(regs);
 	}
 
@@ -218,14 +312,16 @@ static void do_bad_area(unsigned long addr, unsigned int esr, struct pt_regs *re
 {
 	struct task_struct *tsk = current;
 	struct mm_struct *mm = tsk->active_mm;
+	const struct fault_info *inf;
 
 	/*
 	 * If we are in kernel mode at this point, we have no context to
 	 * handle this fault with.
 	 */
-	if (user_mode(regs))
-		__do_user_fault(tsk, addr, esr, SIGSEGV, SEGV_MAPERR, regs);
-	else
+	if (user_mode(regs)) {
+		inf = esr_to_fault_info(esr);
+		__do_user_fault(tsk, addr, esr, inf->sig, inf->code, regs);
+	} else
 		__do_kernel_fault(mm, addr, esr, regs);
 }
 
@@ -269,13 +365,19 @@ out:
 	return fault;
 }
 
-static inline bool is_permission_fault(unsigned int esr)
+static inline bool is_permission_fault(unsigned int esr, struct pt_regs *regs)
 {
 	unsigned int ec       = ESR_ELx_EC(esr);
 	unsigned int fsc_type = esr & ESR_ELx_FSC_TYPE;
 
-	return (ec == ESR_ELx_EC_DABT_CUR && fsc_type == ESR_ELx_FSC_PERM) ||
-	       (ec == ESR_ELx_EC_IABT_CUR && fsc_type == ESR_ELx_FSC_PERM);
+	if (ec != ESR_ELx_EC_DABT_CUR && ec != ESR_ELx_EC_IABT_CUR)
+		return false;
+
+	if (system_uses_ttbr0_pan())
+		return fsc_type == ESR_ELx_FSC_FAULT &&
+			(regs->pstate & PSR_PAN_BIT);
+	else
+		return fsc_type == ESR_ELx_FSC_PERM;
 }
 
 static bool is_el0_instruction_abort(unsigned int esr)
@@ -315,7 +417,7 @@ static int __kprobes do_page_fault(unsigned long addr, unsigned int esr,
 		mm_flags |= FAULT_FLAG_WRITE;
 	}
 
-	if (is_permission_fault(esr) && (addr < USER_DS)) {
+	if (addr < USER_DS && is_permission_fault(esr, regs)) {
 		/* regs->orig_addr_limit may be 0 if we entered from EL0 */
 		if (regs->orig_addr_limit == KERNEL_DS)
 			die("Accessing user space memory with fs=KERNEL_DS", regs, esr);
@@ -356,8 +458,11 @@ retry:
 	 * signal first. We do not need to release the mmap_sem because it
 	 * would already be released in __lock_page_or_retry in mm/filemap.c.
 	 */
-	if ((fault & VM_FAULT_RETRY) && fatal_signal_pending(current))
+	if ((fault & VM_FAULT_RETRY) && fatal_signal_pending(current)) {
+		if (!user_mode(regs))
+			goto no_context;
 		return 0;
+	}
 
 	/*
 	 * Major/minor page fault accounting is only done on the initial
@@ -481,12 +586,7 @@ static int do_bad(unsigned long addr, unsigned int esr, struct pt_regs *regs)
 	return 1;
 }
 
-static const struct fault_info {
-	int	(*fn)(unsigned long addr, unsigned int esr, struct pt_regs *regs);
-	int	sig;
-	int	code;
-	const char *name;
-} fault_info[] = {
+static const struct fault_info fault_info[] = {
 	{ do_bad,		SIGBUS,  0,		"ttbr address size fault"	},
 	{ do_bad,		SIGBUS,  0,		"level 1 address size fault"	},
 	{ do_bad,		SIGBUS,  0,		"level 2 address size fault"	},
@@ -494,7 +594,7 @@ static const struct fault_info {
 	{ do_translation_fault,	SIGSEGV, SEGV_MAPERR,	"level 0 translation fault"	},
 	{ do_translation_fault,	SIGSEGV, SEGV_MAPERR,	"level 1 translation fault"	},
 	{ do_translation_fault,	SIGSEGV, SEGV_MAPERR,	"level 2 translation fault"	},
-	{ do_page_fault,	SIGSEGV, SEGV_MAPERR,	"level 3 translation fault"	},
+	{ do_translation_fault,	SIGSEGV, SEGV_MAPERR,	"level 3 translation fault"	},
 	{ do_bad,		SIGBUS,  0,		"unknown 8"			},
 	{ do_page_fault,	SIGSEGV, SEGV_ACCERR,	"level 1 access flag fault"	},
 	{ do_page_fault,	SIGSEGV, SEGV_ACCERR,	"level 2 access flag fault"	},
@@ -553,19 +653,13 @@ static const struct fault_info {
 	{ do_bad,		SIGBUS,  0,		"unknown 63"			},
 };
 
-static const char *fault_name(unsigned int esr)
-{
-	const struct fault_info *inf = fault_info + (esr & 63);
-	return inf->name;
-}
-
 /*
  * Dispatch a data abort to the relevant handler.
  */
 asmlinkage void __exception do_mem_abort(unsigned long addr, unsigned int esr,
 					 struct pt_regs *regs)
 {
-	const struct fault_info *inf = fault_info + (esr & 63);
+	const struct fault_info *inf = esr_to_fault_info(esr);
 	struct siginfo info;
 
 	if (!inf->fn(addr, esr, regs))

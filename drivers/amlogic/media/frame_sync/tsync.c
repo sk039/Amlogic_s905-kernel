@@ -30,7 +30,7 @@
 #include <linux/amlogic/media/utils/vdec_reg.h>
 #include <linux/amlogic/media/frame_sync/tsync_pcr.h>
 #include <linux/amlogic/media/registers/register.h>
-
+#include <linux/amlogic/media/codec_mm/configs.h>
 
 /* #if MESON_CPU_TYPE >= MESON_CPU_TYPE_MESON6 */
 /* TODO: for stream buffer register bit define only */
@@ -65,6 +65,9 @@ MODULE_AMLOG(AMLOG_DEFAULT_LEVEL, 0, LOG_DEFAULT_LEVEL_DESC,
 #define PCR_MAINTAIN_MARGIN_SHIFT_AUDIO      4
 #define PCR_MAINTAIN_MARGIN_SHIFT_VIDEO      1
 #define PCR_RECOVER_PCR_ADJ 15
+
+#define TSYNC_INIT_STATE (0X01)
+unsigned int tsync_flag;
 
 enum {
 	PCR_SYNC_UNSET,
@@ -122,7 +125,9 @@ static const struct {
 		AVEVENT_FLAG_PARAM
 	}, {
 		"AUDIO_PRE_START", 15, AUDIO_PRE_START, 0
-	},
+	}, {
+	    "AUDIO_WAIT", 10, AUDIO_WAIT, 0
+	}
 };
 
 static const char * const tsync_mode_str[] = {
@@ -213,9 +218,9 @@ static void tsync_pcr_recover_with_audio(void)
 #if 0				/* MESON_CPU_TYPE < MESON_CPU_TYPE_MESON6 */
 
 	if (get_cpu_type() < MESON_CPU_MAJOR_ID_M6) {
-		u32 ab_level = READ_MPEG_REG(AIU_MEM_AIFIFO_LEVEL);
-		u32 ab_size = READ_MPEG_REG(AIU_MEM_AIFIFO_END_PTR)
-			- READ_MPEG_REG(AIU_MEM_AIFIFO_START_PTR) + 8;
+		u32 ab_level = READ_AIU_REG(AIU_MEM_AIFIFO_LEVEL);
+		u32 ab_size = READ_AIU_REG(AIU_MEM_AIFIFO_END_PTR)
+			- READ_AIU_REG(AIU_MEM_AIFIFO_START_PTR) + 8;
 		u32 vb_level = READ_VREG(VLD_MEM_VIFIFO_LEVEL);
 		u32 vb_size = READ_VREG(VLD_MEM_VIFIFO_END_PTR)
 			- READ_VREG(VLD_MEM_VIFIFO_START_PTR) + 8;
@@ -225,7 +230,7 @@ static void tsync_pcr_recover_with_audio(void)
 		bool lower_than_high = false;
 		bool higher_than_low = false;
 
-		if ((READ_MPEG_REG(AIU_MEM_I2S_CONTROL) &
+		if ((READ_AIU_REG(AIU_MEM_I2S_CONTROL) &
 			 (MEM_CTRL_EMPTY_EN | MEM_CTRL_EMPTY_EN)) == 0)
 			return;
 		/*
@@ -468,7 +473,7 @@ static bool tsync_pcr_recover_use_video(void)
 	 *mixer so audio playback has no direct relationship with
 	 *applications. TODO.
 	 */
-	return ((READ_MPEG_REG(AIU_MEM_I2S_CONTROL) &
+	return ((READ_AIU_REG(AIU_MEM_I2S_CONTROL) &
 			 (MEM_CTRL_EMPTY_EN | MEM_CTRL_EMPTY_EN)) == 0) ?
 		true : false;
 }
@@ -642,7 +647,7 @@ static void tsync_state_switch_timer_fun(unsigned long arg)
 		tsync_av_dynamic_timeout_ms =
 			jiffies_ms + tsync_av_dynamic_duration_ms;
 	}
-	tsync_state_switch_timer.expires = jiffies + 20;
+	tsync_state_switch_timer.expires = jiffies + msecs_to_jiffies(200);
 	add_timer(&tsync_state_switch_timer);
 }
 
@@ -673,7 +678,7 @@ void tsync_avevent_locked(enum avevent_e event, u32 param)
 		 *by avpts-diff too much
 		 *threshold 120s is an arbitrary value
 		 */
-#if 0
+#if 0//DEBUG_TMP
 		if (tsync_enable && !get_vsync_pts_inc_mode())
 			tsync_mode = TSYNC_MODE_AMASTER;
 		else {
@@ -681,7 +686,6 @@ void tsync_avevent_locked(enum avevent_e event, u32 param)
 			if (get_vsync_pts_inc_mode())
 				tsync_stat = TSYNC_STAT_PCRSCR_SETUP_NONE;
 		}
-		/*mask*/
 #endif
 		if (tsync_dec_reset_flag)
 			tsync_dec_reset_video_start = 1;
@@ -809,6 +813,9 @@ void tsync_avevent_locked(enum avevent_e event, u32 param)
 		timestamp_apts_start(0);
 		break;
 
+	case AUDIO_WAIT:
+		timestamp_pcrscr_set(timestamp_vpts_get());
+		break;
 	case AUDIO_START:
 		/* reset discontinue var */
 		tsync_set_sync_adiscont(0);
@@ -915,12 +922,12 @@ void tsync_avevent_locked(enum avevent_e event, u32 param)
 	case VIDEO_START:
 	case AUDIO_START:
 	case AUDIO_RESUME:
-		/*amvdev_resume();*//*mask*/
+		/*amvdev_resume();*//*DEBUG_TMP*/
 		break;
 	case VIDEO_STOP:
 	case AUDIO_STOP:
 	case AUDIO_PAUSE:
-		/*amvdev_pause();*//*mask*/
+		/*amvdev_pause();*//*DEBUG_TMP*/
 		break;
 	case VIDEO_PAUSE:
 		/*
@@ -929,7 +936,7 @@ void tsync_avevent_locked(enum avevent_e event, u32 param)
 		 *else
 		 *	amvdev_resume();
 		 */
-		/*mask*/
+		//DEBUG_TMP
 		break;
 	default:
 		break;
@@ -1065,7 +1072,7 @@ int tsync_set_apts(unsigned int pts)
 		t = timestamp_pcrscr_get();
 	if ((abs(oldpts - pts) > tsync_av_threshold_min)
 			/*&&*/
-	/*(!get_vsync_pts_inc_mode())*//*mask*/) {/* is discontinue */
+	/*(!get_vsync_pts_inc_mode())*//*DEBUG_TMP*/) {/* is discontinue */
 		apts_discontinue = 1;
 		tsync_mode_switch('A', abs(pts - t),
 				pts - oldpts);	/*if in VMASTER ,just wait */
@@ -1073,11 +1080,11 @@ int tsync_set_apts(unsigned int pts)
 	timestamp_apts_set(pts);
 
 	/*if (get_vsync_pts_inc_mode() && (tsync_mode != TSYNC_MODE_VMASTER))*/
-		/*tsync_mode = TSYNC_MODE_VMASTER;*//*mask*/
+		/*tsync_mode = TSYNC_MODE_VMASTER;*//*DEBUG_TMP*/
 
 	if (tsync_mode == TSYNC_MODE_AMASTER)
 		t = timestamp_pcrscr_get();
-#if 0
+#if 0//DEBUG_TMP
 	if (tsync_mode == TSYNC_MODE_AMASTER) {
 		/* special used for Dobly Certification AVSync test */
 		if (dobly_avsync_test) {
@@ -1126,10 +1133,38 @@ int tsync_set_apts(unsigned int pts)
 		}
 	} else if (oldmod != tsync_mode && tsync_mode == TSYNC_MODE_VMASTER)
 		timestamp_pcrscr_set(timestamp_vpts_get());
-#endif /*mask*/
+#endif
 	return 0;
 }
 EXPORT_SYMBOL(tsync_set_apts);
+
+void tsync_init(void)
+{
+	if (tsync_flag & TSYNC_INIT_STATE)
+		return;
+
+	tsync_flag |= TSYNC_INIT_STATE;
+
+	/* init audio pts to -1, others to 0 */
+	timestamp_apts_set(-1);
+	timestamp_vpts_set(0);
+	timestamp_pcrscr_set(0);
+
+	init_timer(&tsync_pcr_recover_timer);
+
+	tsync_pcr_recover_timer.function = tsync_pcr_recover_timer_func;
+	tsync_pcr_recover_timer.expires = jiffies + PCR_CHECK_INTERVAL;
+	pcr_sync_stat = PCR_SYNC_UNSET;
+	pcr_recover_trigger = 0;
+
+	add_timer(&tsync_pcr_recover_timer);
+
+	init_timer(&tsync_state_switch_timer);
+	tsync_state_switch_timer.function = tsync_state_switch_timer_fun;
+	tsync_state_switch_timer.expires = jiffies + msecs_to_jiffies(10);
+
+	add_timer(&tsync_state_switch_timer);
+}
 
 /*********************************************************/
 
@@ -1885,8 +1920,161 @@ static struct class tsync_class = {
 		.name = "tsync",
 		.class_attrs = tsync_class_attrs,
 	};
-#if 0
-int tsync_init(void)
+
+
+int tsync_store_fun(const char *trigger, int id, const char *buf, int size)
+{
+	int ret = size;
+
+	switch (id) {
+	case 0:	return store_vpts(NULL, NULL, buf, size);
+	case 1:	return store_apts(NULL, NULL, buf, size);
+	case 2:	return dobly_store_sync(NULL, NULL, buf, size);
+	case 3:	return store_pcrscr(NULL, NULL, buf, size);
+	case 4:	return store_event(NULL, NULL, buf, size);
+	case 5:	return store_mode(NULL, NULL, buf, size);
+	case 6:	return store_enable(NULL, NULL, buf, size);
+	case 7:	return store_pcr_recover(NULL, NULL, buf, size);
+	case 8:	return store_discontinue(NULL, NULL, buf, size);
+	case 9:	return store_debug_pts_checkin(NULL, NULL, buf, size);
+	case 10:return store_debug_pts_checkout(NULL, NULL, buf, size);
+	case 11:return store_debug_vpts(NULL, NULL, buf, size);
+	case 12:return store_debug_apts(NULL, NULL, buf, size);
+	case 13:return store_av_threshold_min(NULL, NULL, buf, size);
+	case 14:return store_av_threshold_max(NULL, NULL, buf, size);
+	/*case 15:return -1;*/
+	/*case 16:return -1;*/
+	case 17:return store_vpause_flag(NULL, NULL, buf, size);
+	case 18:return store_slowsync_enable(NULL, NULL, buf, size);
+	case 19:return store_startsync_mode(NULL, NULL, buf, size);
+	case 20:return store_firstapts(NULL, NULL, buf, size);
+	case 21:return -1;
+	default:
+		ret = -1;
+	}
+	return size;
+}
+int tsync_show_fun(const char *trigger, int id, char *sbuf, int size)
+{
+	int ret = -1;
+	void *buf, *getbuf = NULL;
+
+	if (size < PAGE_SIZE) {
+		getbuf = (void *)__get_free_page(GFP_KERNEL);
+		if (!getbuf)
+			return -ENOMEM;
+		buf = getbuf;
+	} else {
+		buf = sbuf;
+	}
+
+	switch (id) {
+	case 0:
+		ret = show_vpts(NULL, NULL, buf);
+		break;
+	case 1:
+		ret = show_apts(NULL, NULL, buf);
+		break;
+	case 2:
+		ret =  dobly_show_sync(NULL, NULL, buf);
+		break;
+	case 3:
+		ret = show_pcrscr(NULL, NULL, buf);
+		break;
+	case 4:
+		ret = -1;
+		break;
+	case 5:
+		ret = show_mode(NULL, NULL, buf);
+		break;
+	case 6:
+		ret = show_enable(NULL, NULL, buf);
+		break;
+	case 7:
+		ret = show_pcr_recover(NULL, NULL, buf);
+		break;
+	case 8:
+		ret = show_discontinue(NULL, NULL, buf);
+		break;
+	case 9:
+		ret = show_debug_pts_checkin(NULL, NULL, buf);
+		break;
+	case 10:
+		ret = show_debug_pts_checkout(NULL, NULL, buf);
+		break;
+	case 11:
+		ret = show_debug_vpts(NULL, NULL, buf);
+		break;
+	case 12:
+		ret = show_debug_apts(NULL, NULL, buf);
+		break;
+	case 13:
+		ret = show_av_threshold_min(NULL, NULL, buf);
+		break;
+	case 14:
+		ret = show_av_threshold_max(NULL, NULL, buf);
+		break;
+	case 15:
+		ret = show_last_checkin_apts(NULL, NULL, buf);
+		break;
+	case 16:
+		ret = show_firstvpts(NULL, NULL, buf);
+		break;
+	case 17:
+		ret = show_vpause_flag(NULL, NULL, buf);
+		break;
+	case 18:
+		ret = show_slowsync_enable(NULL, NULL, buf);
+		break;
+	case 19:
+		ret = show_startsync_mode(NULL, NULL, buf);
+		break;
+	case 20:
+		ret = show_firstapts(NULL, NULL, buf);
+		break;
+	case 21:
+		ret = show_checkin_firstvpts(NULL, NULL, buf);
+		break;
+	default:
+		ret = -1;
+	}
+	if (ret > 0 && getbuf != NULL) {
+		ret = min_t(int, ret, size);
+		strncpy(sbuf, buf, ret);
+	}
+	if (getbuf != NULL)
+		free_page((unsigned long)getbuf);
+	return ret;
+}
+
+
+static struct mconfig tsync_configs[] = {
+	MC_FUN_ID("pts_video", tsync_show_fun, tsync_store_fun, 0),
+	MC_FUN_ID("pts_audio", tsync_show_fun, tsync_store_fun, 1),
+	MC_FUN_ID("dobly_av_sync", tsync_show_fun, tsync_store_fun, 2),
+	MC_FUN_ID("pts_pcrscr", tsync_show_fun, tsync_store_fun, 3),
+	MC_FUN_ID("event", tsync_show_fun, tsync_store_fun, 4),
+	MC_FUN_ID("mode", tsync_show_fun, tsync_store_fun, 5),
+	MC_FUN_ID("enable", tsync_show_fun, tsync_store_fun, 6),
+	MC_FUN_ID("pcr_recover", tsync_show_fun, tsync_store_fun, 7),
+	MC_FUN_ID("discontinue", tsync_show_fun, tsync_store_fun, 8),
+	MC_FUN_ID("debug_pts_checkin", tsync_show_fun, tsync_store_fun, 9),
+	MC_FUN_ID("debug_pts_checkout", tsync_show_fun, tsync_store_fun, 10),
+	MC_FUN_ID("debug_video_pts", tsync_show_fun, tsync_store_fun, 11),
+	MC_FUN_ID("debug_audio_pts", tsync_show_fun, tsync_store_fun, 12),
+	MC_FUN_ID("av_threshold_min", tsync_show_fun, tsync_store_fun, 13),
+	MC_FUN_ID("av_threshold_max", tsync_show_fun, tsync_store_fun, 14),
+	MC_FUN_ID("last_checkin_apts", tsync_show_fun, NULL, 15),
+	MC_FUN_ID("firstvpts", tsync_show_fun, NULL, 16),
+	MC_FUN_ID("vpause_flag", tsync_show_fun, tsync_store_fun, 17),
+	MC_FUN_ID("slowsync_enable", tsync_show_fun, tsync_store_fun, 18),
+	MC_FUN_ID("startsync_mode", tsync_show_fun, tsync_store_fun, 19),
+	MC_FUN_ID("firstapts", tsync_show_fun, tsync_store_fun, 20),
+	MC_FUN_ID("checkin_firstvpts", tsync_show_fun, NULL, 21),
+};
+
+
+static int __init tsync_module_init(void)
 {
 	int r;
 
@@ -1897,83 +2085,26 @@ int tsync_init(void)
 		return r;
 	}
 
-	/* init audio pts to -1, others to 0 */
-	timestamp_apts_set(-1);
-	timestamp_vpts_set(0);
-	timestamp_pcrscr_set(0);
+	tsync_pcr_init();
 
-	init_timer(&tsync_pcr_recover_timer);
+	REG_PATH_CONFIGS("media.tsync", tsync_configs);
 
-	tsync_pcr_recover_timer.function = tsync_pcr_recover_timer_func;
-	tsync_pcr_recover_timer.expires = jiffies + PCR_CHECK_INTERVAL;
-	pcr_sync_stat = PCR_SYNC_UNSET;
-	pcr_recover_trigger = 0;
-
-	add_timer(&tsync_pcr_recover_timer);
-
-	init_timer(&tsync_state_switch_timer);
-	tsync_state_switch_timer.function = tsync_state_switch_timer_fun;
-	tsync_state_switch_timer.expires = jiffies + 1;
-
-	add_timer(&tsync_state_switch_timer);
 	return 0;
 }
 
-void tsync_exit(void)
+static void __exit tsync_module_exit(void)
 {
-	del_timer_sync(&tsync_pcr_recover_timer);
-
-	class_unregister(&tsync_class);
-}
-#endif
-#if 1
-static int __init tsync_init(void)
-{
-	int r;
-
-	r = class_register(&tsync_class);
-
-	if (r) {
-		amlog_level(LOG_LEVEL_ERROR, "tsync class create fail.\n");
-		return r;
+	if (tsync_flag & TSYNC_INIT_STATE) {
+		del_timer_sync(&tsync_pcr_recover_timer);
+		del_timer_sync(&tsync_state_switch_timer);
 	}
 
-	/* init audio pts to -1, others to 0 */
-	timestamp_apts_set(-1);
-	timestamp_vpts_set(0);
-	timestamp_pcrscr_set(0);
-
-	init_timer(&tsync_pcr_recover_timer);
-
-	tsync_pcr_recover_timer.function = tsync_pcr_recover_timer_func;
-	tsync_pcr_recover_timer.expires = jiffies + PCR_CHECK_INTERVAL;
-	pcr_sync_stat = PCR_SYNC_UNSET;
-	pcr_recover_trigger = 0;
-
-	add_timer(&tsync_pcr_recover_timer);
-
-	init_timer(&tsync_state_switch_timer);
-	tsync_state_switch_timer.function = tsync_state_switch_timer_fun;
-	tsync_state_switch_timer.expires = jiffies + 1;
-
-	add_timer(&tsync_state_switch_timer);
-
-	tsync_pcr_init();/*mask*/
-
-	return 0;
-}
-
-static void __exit tsync_exit(void)
-{
-	del_timer_sync(&tsync_pcr_recover_timer);
-
 	class_unregister(&tsync_class);
-	tsync_pcr_exit();/*mask*/
+	tsync_pcr_exit();
 }
 
-module_init(tsync_init);
-module_exit(tsync_exit);
-#endif
+module_init(tsync_module_init);
+module_exit(tsync_module_exit);
 MODULE_DESCRIPTION("AMLOGIC time sync management driver");
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Tim Yao <timyao@amlogic.com>");

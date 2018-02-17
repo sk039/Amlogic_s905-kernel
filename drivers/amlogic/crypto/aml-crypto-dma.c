@@ -40,8 +40,7 @@
 #include <linux/amlogic/iomap.h>
 #include <linux/amlogic/cpu_version.h>
 #include "aml-crypto-dma.h"
-#if 1
-void __iomem *cryptoreg_offset;
+
 u32 swap_ulong32(u32 val)
 {
 	u32 res = 0;
@@ -50,60 +49,67 @@ u32 swap_ulong32(u32 val)
 		(((val >> 16) & 0xff) << 8) + ((val >> 24) & 0xff);
 	return res;
 }
+EXPORT_SYMBOL_GPL(swap_ulong32);
+
 void aml_write_crypto_reg(u32 addr, u32 data)
 {
-	writel(data, cryptoreg_offset + (addr << 2));
+	if (cryptoreg)
+		writel(data, cryptoreg + (addr << 2));
+	else
+		pr_err("crypto reg mapping is not initailized\n");
 }
+EXPORT_SYMBOL_GPL(aml_write_crypto_reg);
 
 u32 aml_read_crypto_reg(u32 addr)
 {
-	return readl(cryptoreg_offset + (addr << 2));
+	if (!cryptoreg) {
+		pr_err("crypto reg mapping is not initailized\n");
+		return 0;
+	}
+	return readl(cryptoreg + (addr << 2));
 }
-#endif
-void aml_dma_debug(struct dma_dsc *dsc, u32 nents, const char *msg)
-{
-#if AML_CRYPTO_DEBUG
-	uint32_t i = 0;
+EXPORT_SYMBOL_GPL(aml_read_crypto_reg);
 
-	pr_err("begin %s\n", msg);
-	for (i = 0; i < 2; i++)
-		pr_err("reg(%lu) = 0x%8x\n", (uintptr_t)(DMA_T0 + i),
-				aml_read_crypto_reg(DMA_T0 + i));
-	for (i = 0; i < 2; i++)
-		pr_err("reg(%lu) = 0x%8x\n", (uintptr_t)(DMA_STS0 + i),
-				aml_read_crypto_reg(DMA_STS0 + i));
-	pr_err("reg(%lu) = 0x%8x\n", (uintptr_t)(DMA_CFG),
-			aml_read_crypto_reg(DMA_CFG));
+void aml_dma_debug(struct dma_dsc *dsc, u32 nents, const char *msg,
+		u32 thread, u32 status)
+{
+	u32 i = 0;
+
+	pr_debug("begin %s\n", msg);
+	pr_debug("reg(%u) = 0x%8x\n", thread,
+			aml_read_crypto_reg(thread));
+	pr_debug("reg(%u) = 0x%8x\n", status,
+			aml_read_crypto_reg(status));
 	for (i = 0; i < nents; i++) {
-		pr_err("desc (%4x) (len) = 0x%8x\n", i,
+		pr_debug("desc (%4x) (len) = 0x%8x\n", i,
 				dsc[i].dsc_cfg.b.length);
-		pr_err("desc (%4x) (irq) = 0x%8x\n", i,
+		pr_debug("desc (%4x) (irq) = 0x%8x\n", i,
 				dsc[i].dsc_cfg.b.irq);
-		pr_err("desc (%4x) (eoc) = 0x%8x\n", i,
+		pr_debug("desc (%4x) (eoc) = 0x%8x\n", i,
 				dsc[i].dsc_cfg.b.eoc);
-		pr_err("desc (%4x) (lop) = 0x%8x\n", i,
+		pr_debug("desc (%4x) (lop) = 0x%8x\n", i,
 				dsc[i].dsc_cfg.b.loop);
-		pr_err("desc (%4x) (mod) = 0x%8x\n", i,
+		pr_debug("desc (%4x) (mod) = 0x%8x\n", i,
 				dsc[i].dsc_cfg.b.mode);
-		pr_err("desc (%4x) (beg) = 0x%8x\n", i,
+		pr_debug("desc (%4x) (beg) = 0x%8x\n", i,
 				dsc[i].dsc_cfg.b.begin);
-		pr_err("desc (%4x) (end) = 0x%8x\n", i,
+		pr_debug("desc (%4x) (end) = 0x%8x\n", i,
 				dsc[i].dsc_cfg.b.end);
-		pr_err("desc (%4x) (opm) = 0x%8x\n", i,
+		pr_debug("desc (%4x) (opm) = 0x%8x\n", i,
 				dsc[i].dsc_cfg.b.op_mode);
-		pr_err("desc (%4x) (enc) = 0x%8x\n", i,
+		pr_debug("desc (%4x) (enc) = 0x%8x\n", i,
 				dsc[i].dsc_cfg.b.enc_sha_only);
-		pr_err("desc (%4x) (blk) = 0x%8x\n", i,
+		pr_debug("desc (%4x) (blk) = 0x%8x\n", i,
 				dsc[i].dsc_cfg.b.block);
-		pr_err("desc (%4x) (err) = 0x%8x\n", i,
+		pr_debug("desc (%4x) (err) = 0x%8x\n", i,
 				dsc[i].dsc_cfg.b.error);
-		pr_err("desc (%4x) (own) = 0x%8x\n", i,
+		pr_debug("desc (%4x) (own) = 0x%8x\n", i,
 				dsc[i].dsc_cfg.b.owner);
-		pr_err("desc (%4x) (src) = 0x%8x\n", i,
+		pr_debug("desc (%4x) (src) = 0x%8x\n", i,
 				dsc[i].src_addr);
-		pr_err("desc (%4x) (tgt) = 0x%8x\n", i,
+		pr_debug("desc (%4x) (tgt) = 0x%8x\n", i,
 				dsc[i].tgt_addr);
 	}
-	pr_err("end %s\n", msg);
-#endif
+	pr_debug("end %s\n", msg);
 }
+EXPORT_SYMBOL_GPL(aml_dma_debug);

@@ -105,8 +105,13 @@ static int wiphy_suspend(struct device *dev)
 	rtnl_lock();
 	if (rdev->wiphy.registered) {
 		if (!rdev->wiphy.wowlan_config) {
+#ifdef CONFIG_AMLOGIC_WIFI
+			printk_ratelimited(KERN_INFO
+				"force to skip cfg80211_leave_all due to wifi suspend/resume issue\n");
+#else
 			cfg80211_leave_all(rdev);
 			cfg80211_process_rdev_events(rdev);
+#endif
 		}
 		if (rdev->ops->suspend)
 			ret = rdev_suspend(rdev, rdev->wiphy.wowlan_config);
@@ -130,12 +135,10 @@ static int wiphy_resume(struct device *dev)
 	/* Age scan results with time spent in suspend */
 	cfg80211_bss_age(rdev, get_seconds() - rdev->suspend_at);
 
-	if (rdev->ops->resume) {
-		rtnl_lock();
-		if (rdev->wiphy.registered)
-			ret = rdev_resume(rdev);
-		rtnl_unlock();
-	}
+	rtnl_lock();
+	if (rdev->wiphy.registered && rdev->ops->resume)
+		ret = rdev_resume(rdev);
+	rtnl_unlock();
 
 	return ret;
 }

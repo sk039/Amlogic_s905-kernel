@@ -932,6 +932,7 @@ const char * const vmstat_text[] = {
 	"nr_slab_unreclaimable",
 	"nr_page_table_pages",
 	"nr_kernel_stack",
+	"nr_overhead",
 	"nr_bounce",
 #if IS_ENABLED(CONFIG_ZSMALLOC)
 	"nr_zspages",
@@ -1164,12 +1165,18 @@ static void pagetypeinfo_showfree_print(struct seq_file *m,
 					pg_data_t *pgdat, struct zone *zone)
 {
 	int order, mtype;
+#ifdef CONFIG_AMLOGIC_MODIFY
+	unsigned long total;
+#endif /* CONFIG_AMLOGIC_MODIFY */
 
 	for (mtype = 0; mtype < MIGRATE_TYPES; mtype++) {
 		seq_printf(m, "Node %4d, zone %8s, type %12s ",
 					pgdat->node_id,
 					zone->name,
 					migratetype_names[mtype]);
+	#ifdef CONFIG_AMLOGIC_MODIFY
+		total = 0;
+	#endif /* CONFIG_AMLOGIC_MODIFY */
 		for (order = 0; order < MAX_ORDER; ++order) {
 			unsigned long freecount = 0;
 			struct free_area *area;
@@ -1180,7 +1187,14 @@ static void pagetypeinfo_showfree_print(struct seq_file *m,
 			list_for_each(curr, &area->free_list[mtype])
 				freecount++;
 			seq_printf(m, "%6lu ", freecount);
+		#ifdef CONFIG_AMLOGIC_MODIFY
+			total += (freecount << order);
+		#endif /* CONFIG_AMLOGIC_MODIFY */
 		}
+	#ifdef CONFIG_AMLOGIC_MODIFY
+		/* show total size for each migrate type*/
+		seq_printf(m, " %6lu", total);
+	#endif /* CONFIG_AMLOGIC_MODIFY */
 		seq_putc(m, '\n');
 	}
 }
@@ -1195,6 +1209,9 @@ static int pagetypeinfo_showfree(struct seq_file *m, void *arg)
 	seq_printf(m, "%-43s ", "Free pages count per migrate type at order");
 	for (order = 0; order < MAX_ORDER; ++order)
 		seq_printf(m, "%6d ", order);
+#ifdef CONFIG_AMLOGIC_MODIFY
+	seq_printf(m, "%s", "  total");
+#endif /* CONFIG_AMLOGIC_MODIFY */
 	seq_putc(m, '\n');
 
 	walk_zones_in_node(m, pgdat, pagetypeinfo_showfree_print);

@@ -44,6 +44,7 @@
 #define VIDTYPE_COMPRESS                0x100000
 #define VIDTYPE_PIC		        0x200000
 #define VIDTYPE_SCATTER                 0x400000
+#define VIDTYPE_VD2						0x800000
 
 #define DISP_RATIO_FORCECONFIG          0x80000000
 #define DISP_RATIO_FORCE_NORMALWIDE     0x40000000
@@ -57,8 +58,20 @@
 #define DISP_RATIO_ASPECT_RATIO_BIT     8
 #define DISP_RATIO_ASPECT_RATIO_MAX     0x3ff
 
+#define TB_DETECT_MASK    0x00000040
+#define TB_DETECT_MASK_BIT     6
+#define TB_DETECT_NONE          0
+#define TB_DETECT_INVERT       1
+#define TB_DETECT_NC               0
+#define TB_DETECT_TFF             1
+#define TB_DETECT_BFF             2
+#define TB_DETECT_TBF             3
+
 #define VFRAME_FLAG_NO_DISCONTINUE      1
 #define VFRAME_FLAG_SWITCHING_FENSE     2
+#define VFRAME_FLAG_HIGH_BANDWIDTH	4
+#define VFRAME_FLAG_ERROR_RECOVERY		8
+#define VFRAME_FLAG_SYNCFRAME			0x10
 
 enum pixel_aspect_ratio_e {
 	PIXEL_ASPECT_RATIO_1_1,
@@ -124,12 +137,22 @@ struct vframe_view_s {
 	unsigned int height;
 } /*vframe_view_t */;
 
+#define SEI_ContentLightLevel 144
+struct vframe_content_light_level_s {
+	u32 present_flag;
+	u32 max_content;
+	u32 max_pic_average;
+}; /* content_light_level from SEI */
+
+#define SEI_MasteringDisplayColorVolume 137
 struct vframe_master_display_colour_s {
 	u32 present_flag;
 	u32 primaries[3][2];
 	u32 white_point[2];
 	u32 luminance[2];
-};				/* master_display_colour_info_volume from SEI */
+	struct vframe_content_light_level_s
+		content_light_level;
+}; /* master_display_colour_info_volume from SEI */
 
 /* vframe properties */
 struct vframe_prop_s {
@@ -175,6 +198,12 @@ enum vframe_secam_phase_e {
 	VFRAME_PHASE_DB = 0,
 	VFRAME_PHASE_DR,
 };
+enum vframe_disp_mode_e {
+	VFRAME_DISP_MODE_NULL = 0,
+	VFRAME_DISP_MODE_UNKNOWN,
+	VFRAME_DISP_MODE_SKIP,
+	VFRAME_DISP_MODE_OK,
+};
 
 #define BITDEPTH_Y_SHIFT 8
 #define BITDEPTH_Y8    (0 << BITDEPTH_Y_SHIFT)
@@ -199,6 +228,8 @@ enum vframe_secam_phase_e {
 #define FULL_PACK_422_MODE		0x2
 struct vframe_s {
 	u32 index;
+	u32 index_disp;
+	u32 omx_index;
 	u32 type;
 	u32 type_backup;
 	u32 type_original;
@@ -207,6 +238,8 @@ struct vframe_s {
 	u32 duration_pulldown;
 	u32 pts;
 	u64 pts_us64;
+	u32 disp_pts;
+	u64 disp_pts_us64;
 	u32 flag;
 
 	u32 canvas0Addr;
@@ -284,12 +317,16 @@ struct vframe_s {
 	 *0: process p from decoder as frame
 	 */
 	u32 prog_proc_config;
+	/* used for indicate current video is motion or static */
+	int combing_cur_lev;
 
 	/*
 	 *for vframe's memory,
 	 * used by memory owner.
 	 */
 	void *mem_handle;
+	/*for MMU H265/VP9 compress header*/
+	void *mem_head_handle;
 } /*vframe_t */;
 
 #if 0

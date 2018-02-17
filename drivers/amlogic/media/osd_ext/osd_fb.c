@@ -40,18 +40,20 @@
 #include <linux/uaccess.h>
 
 /* Amlogic Headers */
-#include <linux/amlogic/display/vout_notify.h>
+#include <linux/amlogic/media/vout/vinfo.h>
+#include <linux/amlogic/media/vout/vout_notify.h>
+
 
 /* Local Headers */
 #include <osd/osd.h>
 #include <osd/osd_log.h>
 #include <osd/osd_sync.h>
+#include <osd/osd_io.h>
 #include "osd_hw.h"
 #include "osd_fb.h"
 
-
-#ifdef CONFIG_HAS_EARLYSUSPEND
-#include <linux/earlysuspend.h>
+#ifdef CONFIG_AMLOGIC_LEGACY_EARLY_SUSPEND
+#include <linux/amlogic/pm.h>
 static struct early_suspend early_suspend;
 static int early_suspend_flag;
 #endif
@@ -1308,7 +1310,7 @@ static struct device_attribute osd_ext_attrs[] = {
 #ifdef CONFIG_PM
 static int osd_ext_suspend(struct platform_device *pdev, pm_message_t state)
 {
-#ifdef CONFIG_HAS_EARLYSUSPEND
+#ifdef CONFIG_AMLOGIC_LEGACY_EARLY_SUSPEND
 	if (early_suspend_flag)
 		return 0;
 #endif
@@ -1324,7 +1326,7 @@ static int osd_ext_resume(struct platform_device *dev)
 		return 0;
 	}
 #endif
-#ifdef CONFIG_HAS_EARLYSUSPEND
+#ifdef CONFIG_AMLOGIC_LEGACY_EARLY_SUSPEND
 	if (early_suspend_flag)
 		return 0;
 #endif
@@ -1333,7 +1335,7 @@ static int osd_ext_resume(struct platform_device *dev)
 }
 #endif
 
-#ifdef CONFIG_HAS_EARLYSUSPEND
+#ifdef CONFIG_AMLOGIC_LEGACY_EARLY_SUSPEND
 static void osd_ext_early_suspend(struct early_suspend *h)
 {
 	if (early_suspend_flag)
@@ -1354,7 +1356,7 @@ static void osd_ext_late_resume(struct early_suspend *h)
 #ifdef CONFIG_SCREEN_ON_EARLY
 void osd_ext_resume_early(void)
 {
-#ifdef CONFIG_HAS_EARLYSUSPEND
+#ifdef CONFIG_AMLOGIC_LEGACY_EARLY_SUSPEND
 	osd_ext_resume_hw();
 	early_suspend_flag = 0;
 #endif
@@ -1392,6 +1394,12 @@ osd_ext_probe(struct platform_device *pdev)
 		goto failed1;
 	} else
 		osd_log_info("viu2 vysnc irq: %d\n", int_viu2_vsync);
+
+	ret = osd_io_remap();
+	if (!ret) {
+		osd_log_err("osd_io_remap failed\n");
+		goto failed1;
+	}
 
 	/* get buffer size from dt */
 	ret = of_property_read_u32_array(pdev->dev.of_node,
@@ -1532,7 +1540,7 @@ osd_ext_probe(struct platform_device *pdev)
 	}
 
 	index = 0;
-#ifdef CONFIG_HAS_EARLYSUSPEND
+#ifdef CONFIG_AMLOGIC_LEGACY_EARLY_SUSPEND
 	early_suspend.level = EARLY_SUSPEND_LEVEL_STOP_DRAWING;
 	early_suspend.suspend = osd_ext_early_suspend;
 	early_suspend.resume = osd_ext_late_resume;
@@ -1559,7 +1567,7 @@ osd_ext_remove(struct platform_device *pdev)
 	if (!pdev)
 		return -ENODEV;
 
-#ifdef CONFIG_HAS_EARLYSUSPEND
+#ifdef CONFIG_AMLOGIC_LEGACY_EARLY_SUSPEND
 	unregister_early_suspend(&early_suspend);
 #endif
 

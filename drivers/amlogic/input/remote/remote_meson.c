@@ -35,14 +35,12 @@
 #include <linux/pinctrl/consumer.h>
 #include <linux/of_platform.h>
 #include <linux/amlogic/cpu_version.h>
-/*Temporary annotation for running linux-4.9*/
-/*#include <linux/amlogic/pm.h>*/
+#include <linux/amlogic/pm.h>
 #include <linux/of_address.h>
-
-
 #include "remote_meson.h"
-
 #include <linux/amlogic/iomap.h>
+#include <linux/pm_wakeup.h>
+#include <linux/pm_wakeirq.h>
 
 static void amlremote_tasklet(unsigned long data);
 
@@ -138,6 +136,60 @@ static int ir_lookup_by_scancode(struct ir_map_tab *ir_map,
 	return -1;
 }
 
+static int ir_report_rel(struct remote_dev *dev, u32 scancode, int status)
+{
+	struct remote_chip *chip = (struct remote_chip *)dev->platform_data;
+	struct ir_map_tab_list *ct = chip->cur_tab;
+	static u32 repeat_count;
+	s32 cursor_value = 0;
+	u32 valid_scancode;
+	u16 mouse_code;
+	s32 move_accelerate[] = CURSOR_MOVE_ACCELERATE;
+
+	/*nothing need to do in normal mode*/
+	if (!ct || (ct->ir_dev_mode != MOUSE_MODE))
+		return -EINVAL;
+
+	if (status == REMOTE_REPEAT) {
+		valid_scancode = dev->last_scancode;
+		repeat_count++;
+		if (repeat_count > ARRAY_SIZE(move_accelerate) - 1)
+			repeat_count = ARRAY_SIZE(move_accelerate) - 1;
+	} else {
+		valid_scancode = scancode;
+		dev->last_scancode = scancode;
+		repeat_count = 0;
+	}
+	if (valid_scancode == ct->tab.cursor_code.cursor_left_scancode) {
+		cursor_value = -(1 + move_accelerate[repeat_count]);
+		mouse_code = REL_X;
+	} else if (valid_scancode ==
+			ct->tab.cursor_code.cursor_right_scancode) {
+		cursor_value = 1 + move_accelerate[repeat_count];
+		mouse_code = REL_X;
+	} else if (valid_scancode ==
+			ct->tab.cursor_code.cursor_up_scancode) {
+		cursor_value = -(1 + move_accelerate[repeat_count]);
+		mouse_code = REL_Y;
+	} else if (valid_scancode ==
+			ct->tab.cursor_code.cursor_down_scancode) {
+		cursor_value = 1 + move_accelerate[repeat_count];
+		mouse_code = REL_Y;
+	} else {
+		return -EINVAL;
+	}
+	input_event(chip->r_dev->input_device, EV_REL,
+			mouse_code, cursor_value);
+	input_sync(chip->r_dev->input_device);
+
+	remote_dbg(chip->dev, "mouse cursor be %s moved %d.\n",
+				mouse_code == REL_X ? "horizontal" :
+					"vertical",
+					cursor_value);
+
+	return 0;
+}
+
 static u32 getkeycode(struct remote_dev *dev, u32 scancode)
 {
 	struct remote_chip *chip = (struct remote_chip *)dev->platform_data;
@@ -148,13 +200,36 @@ static u32 getkeycode(struct remote_dev *dev, u32 scancode)
 		dev_err(chip->dev, "cur_custom is nulll\n");
 		return KEY_RESERVED;
 	}
+	/*return BTN_LEFT in mouse mode*/
+	if (ct->ir_dev_mode == MOUSE_MODE &&
+			scancode == ct->tab.cursor_code.cursor_ok_scancode) {
+		remote_dbg(chip->dev, "mouse left button scancode: 0x%x",
+					BTN_LEFT);
+		return BTN_LEFT;
+	}
+
 	index = ir_lookup_by_scancode(&ct->tab, scancode);
 	if (index < 0) {
 		dev_err(chip->dev, "scancode %d undefined\n", scancode);
 		return KEY_RESERVED;
 	}
+
+	/*save remote-control work mode*/
+	if (dev->keypressed == false &&
+			scancode == ct->tab.cursor_code.fn_key_scancode) {
+		if (ct->ir_dev_mode == NORMAL_MODE)
+			ct->ir_dev_mode = MOUSE_MODE;
+		else
+			ct->ir_dev_mode = NORMAL_MODE;
+		dev_info(chip->dev, "remote control[ID: 0x%x] switch to %s\n",
+					ct->tab.custom_code,
+					ct->ir_dev_mode ?
+					"mouse mode":"normal mode");
+	}
+
 	return ct->tab.codemap[index].map.keycode;
 }
+
 static bool is_valid_custom(struct remote_dev *dev)
 {
 	struct remote_chip *chip = (struct remote_chip *)dev->platform_data;
@@ -173,7 +248,7 @@ static bool is_valid_custom(struct remote_dev *dev)
 
 static bool is_next_repeat(struct remote_dev *dev)
 {
-	unsigned int val;
+	unsigned int val = 0;
 	unsigned char fbusy = 0;
 	unsigned char cnt;
 
@@ -228,7 +303,7 @@ static void amlremote_tasklet(unsigned long data)
 static irqreturn_t ir_interrupt(int irq, void *dev_id)
 {
 	struct remote_chip *rc = (struct remote_chip *)dev_id;
-	int contr_status;
+	int contr_status = 0;
 	int val = 0;
 	u32 duration;
 	char buf[50];
@@ -373,6 +448,8 @@ static int get_custom_tables(struct device_node *node,
 			goto err;
 		}
 
+		memset(&ptable->tab.cursor_code, 0xff,
+					sizeof(struct cursor_codemap));
 		ir_scancode_sort(&ptable->tab);
 		/*insert list*/
 		spin_lock_irqsave(&chip->slock, flags);
@@ -542,6 +619,7 @@ static int remote_probe(struct platform_device *pdev)
 	chip->r_dev->dev = &pdev->dev;
 	chip->r_dev->platform_data = (void *)chip;
 	chip->r_dev->getkeycode    = getkeycode;
+	chip->r_dev->ir_report_rel = ir_report_rel;
 	chip->r_dev->set_custom_code = set_custom_code;
 	chip->r_dev->is_valid_custom = is_valid_custom;
 	chip->r_dev->is_next_repeat  = is_next_repeat;
@@ -562,6 +640,9 @@ static int remote_probe(struct platform_device *pdev)
 	ret = remote_register_device(dev);
 	if (ret)
 		goto error_register_remote;
+
+	device_init_wakeup(&pdev->dev, 1);
+	dev_pm_set_wake_irq(&pdev->dev, chip->irqno);
 
 	return 0;
 
@@ -593,14 +674,14 @@ static int remote_remove(struct platform_device *pdev)
 	return 0;
 }
 
-static int remote_resume(struct platform_device *pdev)
+static int remote_resume(struct device *dev)
 {
-	struct remote_chip *chip = platform_get_drvdata(pdev);
+	struct remote_chip *chip = dev_get_drvdata(dev);
 	unsigned int val;
 	unsigned long flags;
 	unsigned char cnt;
 
-	dev_info(chip->dev, "remote resume\n");
+	dev_info(dev, "remote resume\n");
 	/*resume register config*/
 	spin_lock_irqsave(&chip->slock, flags);
 	chip->set_register_config(chip, chip->protocol);
@@ -611,8 +692,7 @@ static int remote_resume(struct platform_device *pdev)
 	}
 	spin_unlock_irqrestore(&chip->slock, flags);
 
-	/*Temporary annotation for running linux-4.9*/
-#if 0
+#ifdef CONFIG_AMLOGIC_LEGACY_EARLY_SUSPEND
 	if (get_resume_method() == REMOTE_WAKEUP) {
 		input_event(chip->r_dev->input_device,
 		    EV_KEY, KEY_POWER, 1);
@@ -629,16 +709,17 @@ static int remote_resume(struct platform_device *pdev)
 		input_sync(chip->r_dev->input_device);
 	}
 #endif
+
 	irq_set_affinity(chip->irqno, cpumask_of(chip->irq_cpumask));
 	enable_irq(chip->irqno);
 	return 0;
 }
 
-static int remote_suspend(struct platform_device *pdev, pm_message_t state)
+static int remote_suspend(struct device *dev)
 {
-	struct remote_chip *chip = platform_get_drvdata(pdev);
+	struct remote_chip *chip = dev_get_drvdata(dev);
 
-	dev_info(chip->dev, "remote suspend\n");
+	dev_info(dev, "remote suspend\n");
 	disable_irq(chip->irqno);
 	return 0;
 }
@@ -650,14 +731,22 @@ static const struct of_device_id remote_dt_match[] = {
 	{},
 };
 
+#ifdef CONFIG_PM
+static const struct dev_pm_ops remote_pm_ops = {
+	.suspend_late = remote_suspend,
+	.resume_early = remote_resume,
+};
+#endif
+
 static struct platform_driver remote_driver = {
 	.probe = remote_probe,
 	.remove = remote_remove,
-	.suspend = remote_suspend,
-	.resume = remote_resume,
 	.driver = {
 		.name = DRIVER_NAME,
 		.of_match_table = remote_dt_match,
+#ifdef CONFIG_PM
+		.pm = &remote_pm_ops,
+#endif
 	},
 };
 
@@ -680,4 +769,3 @@ module_exit(remote_exit);
 MODULE_AUTHOR("AMLOGIC");
 MODULE_DESCRIPTION("AMLOGIC REMOTE PROTOCOL");
 MODULE_LICENSE("GPL");
-

@@ -55,6 +55,9 @@
 #include <linux/of_mdio.h>
 #include "dwmac1000.h"
 
+#ifdef CONFIG_DWMAC_MESON
+#include <phy_debug.h>
+#endif
 #define STMMAC_ALIGN(x)	L1_CACHE_ALIGN(x)
 #define	TSO_MAX_BUFF_SIZE	(SZ_16K - 1)
 
@@ -1795,6 +1798,7 @@ static int stmmac_open(struct net_device *dev)
 
 	priv->dma_buf_sz = STMMAC_ALIGN(buf_sz);
 	priv->rx_copybreak = STMMAC_RX_COPYBREAK;
+	priv->mss = 0;
 
 	ret = alloc_dma_desc_resources(priv);
 	if (ret < 0) {
@@ -1953,7 +1957,7 @@ static void stmmac_tso_allocator(struct stmmac_priv *priv, unsigned int des,
 
 		priv->hw->desc->prepare_tso_tx_desc(desc, 0, buff_size,
 			0, 1,
-			(last_segment) && (buff_size < TSO_MAX_BUFF_SIZE),
+			(last_segment) && (tmp_len <= TSO_MAX_BUFF_SIZE),
 			0, 0);
 
 		tmp_len -= TSO_MAX_BUFF_SIZE;
@@ -3380,6 +3384,10 @@ int stmmac_dvr_probe(struct device *device,
 		goto error_netdev_register;
 	}
 
+#ifdef CONFIG_DWMAC_MESON
+	ret = gmac_create_sysfs(
+		mdiobus_get_phy(priv->mii, priv->plat->phy_addr), priv->ioaddr);
+#endif
 	return ret;
 
 error_netdev_register:
@@ -3415,6 +3423,10 @@ int stmmac_dvr_remove(struct device *dev)
 
 	priv->hw->dma->stop_rx(priv->ioaddr);
 	priv->hw->dma->stop_tx(priv->ioaddr);
+
+#ifdef CONFIG_DWMAC_MESON
+	gmac_remove_sysfs(priv->phydev);
+#endif
 
 	stmmac_set_mac(priv->ioaddr, false);
 	netif_carrier_off(ndev);
@@ -3457,8 +3469,17 @@ int stmmac_suspend(struct device *dev)
 	netif_device_detach(ndev);
 	netif_stop_queue(ndev);
 
+	/**
+	 *napi_disable call might_sleep,if not irq restore
+	 *It will warning bug
+	 */
+	spin_unlock_irqrestore(&priv->lock, flags);
 	napi_disable(&priv->napi);
+	spin_lock_irqsave(&priv->lock, flags);
 
+#ifdef CONFIG_AMLOGIC_ETH_PRIVE
+	del_timer_sync(&priv->txtimer);
+#endif
 	/* Stop TX/RX DMA */
 	priv->hw->dma->stop_tx(priv->ioaddr);
 	priv->hw->dma->stop_rx(priv->ioaddr);
@@ -3519,8 +3540,9 @@ int stmmac_resume(struct device *dev)
 			stmmac_mdio_reset(priv->mii);
 	}
 
+#ifndef CONFIG_AMLOGIC_ETH_PRIVE
 	netif_device_attach(ndev);
-
+#endif
 	spin_lock_irqsave(&priv->lock, flags);
 
 	priv->cur_rx = 0;
@@ -3534,10 +3556,16 @@ int stmmac_resume(struct device *dev)
 
 	stmmac_clear_descriptors(priv);
 
+	spin_unlock_irqrestore(&priv->lock, flags);
 	stmmac_hw_setup(ndev, false);
+	spin_lock_irqsave(&priv->lock, flags);
+
 	stmmac_init_tx_coalesce(priv);
 	stmmac_set_rx_mode(ndev);
 
+#ifdef CONFIG_AMLOGIC_ETH_PRIVE
+	netif_device_attach(ndev);
+#endif
 	napi_enable(&priv->napi);
 
 	netif_start_queue(ndev);

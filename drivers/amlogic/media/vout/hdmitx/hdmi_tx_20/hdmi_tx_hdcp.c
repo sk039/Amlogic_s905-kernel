@@ -42,26 +42,33 @@
 /* #include <mach/am_regs.h> */
 #include <linux/amlogic/media/vout/hdmi_tx/hdmi_info_global.h>
 #include <linux/amlogic/media/vout/hdmi_tx/hdmi_tx_module.h>
-/* #include <mach/hdmi_tx_reg.h> */
+#include "hw/common.h"
 #include "hdmi_tx_hdcp.h"
 /*
  * hdmi_tx_hdcp.c
  * version 1.1
  */
 
-/* android ics switch device */
-static struct extcon_dev hdcp_dev = {
-	.name = "hdcp",
-};
 
-/* For most cases, we don't use HDCP
- * If using HDCP, need add follow command in boot/init.rc and
- * recovery/boot/init.rc
- * write /sys/module/hdmitx/parameters/hdmi_output_force 0
- */
-static int hdmi_output_force = 1;
 static int hdmi_authenticated;
-static int hdmi_hdcp_process = 1;
+
+unsigned int hdcp_get_downstream_ver(void)
+{
+	unsigned int ret = 14;
+
+	struct hdmitx_dev *hdev = get_hdmitx_device();
+
+	/* if TX don't have HDCP22 key, skip RX hdcp22 ver */
+	if (hdev->HWOp.CntlDDC(hdev,
+		DDC_HDCP_22_LSTORE, 0) == 0)
+		if (hdcp_rd_hdcp22_ver())
+			ret = 22;
+		else
+			ret = 14;
+	else
+		ret = 14;
+	return ret;
+}
 
 /* Notic: the HDCP key setting has been moved to uboot
  * On MBX project, it is too late for HDCP get from
@@ -82,32 +89,32 @@ int hdcp_ksv_valid(unsigned char *dat)
 	return one_num == 20;
 }
 
-static struct timer_list hdcp_monitor_timer;
-static void hdcp_monitor_func(unsigned long arg)
+static void _hdcp_do_work(struct work_struct *work)
 {
-	/* static int hdcp_auth_flag = 0; */
-	struct hdmitx_dev *hdev = (struct hdmitx_dev *)hdcp_monitor_timer.data;
+	struct hdmitx_dev *hdev =
+		container_of(work, struct hdmitx_dev, work_do_hdcp.work);
 
-	if ((hdev->HWOp.Cntl) && (hdev->log & (HDMI_LOG_HDCP)))
-		hdev->HWOp.Cntl(hdev, HDMITX_HDCP_MONITOR, 1);
+	if (hdev->hdcp_mode == 2) {
+		/* hdev->HWOp.CntlMisc(hdev, MISC_HDCP_CLKDIS, 1); */
+		/* schedule_delayed_work(&hdev->work_do_hdcp, HZ / 50); */
+	} else
+		hdev->HWOp.CntlMisc(hdev, MISC_HDCP_CLKDIS, 0);
+}
 
-	mod_timer(&hdcp_monitor_timer, jiffies + 2 * HZ);
+void hdmitx_hdcp_do_work(struct hdmitx_dev *hdev)
+{
+	_hdcp_do_work(&hdev->work_do_hdcp.work);
 }
 
 static int hdmitx_hdcp_task(void *data)
 {
 	struct hdmitx_dev *hdev = (struct hdmitx_dev *)data;
 
-	init_timer(&hdcp_monitor_timer);
-	hdcp_monitor_timer.data = (ulong) data;
-	hdcp_monitor_timer.function = hdcp_monitor_func;
-	hdcp_monitor_timer.expires = jiffies + HZ;
-	add_timer(&hdcp_monitor_timer);
-
+	INIT_DELAYED_WORK(&hdev->work_do_hdcp, _hdcp_do_work);
 	while (hdev->hpd_event != 0xff) {
 		hdmi_authenticated = hdev->HWOp.CntlDDC(hdev,
 			DDC_HDCP_GET_AUTH, 0);
-		extcon_set_state(&hdcp_dev, 0, hdmi_authenticated); //TO_DO___49
+		hdmitx_hdcp_status(hdmi_authenticated);
 		msleep_interruptible(200);
 	}
 
@@ -118,13 +125,11 @@ static int __init hdmitx_hdcp_init(void)
 {
 	struct hdmitx_dev *hdev = get_hdmitx_device();
 
-	hdmi_print(IMP, SYS "hdmitx_hdcp_init\n");
+	pr_info(HDCP "hdmitx_hdcp_init\n");
 	if (hdev->hdtx_dev == NULL) {
-		hdmi_print(IMP, SYS "exit for null device of hdmitx!\n");
+		pr_info(HDCP "exit for null device of hdmitx!\n");
 		return -ENODEV;
 	}
-
-	extcon_dev_register(&hdcp_dev);
 
 	hdev->task_hdcp = kthread_run(hdmitx_hdcp_task,	(void *)hdev,
 		"kthread_hdcp");
@@ -134,19 +139,15 @@ static int __init hdmitx_hdcp_init(void)
 
 static void __exit hdmitx_hdcp_exit(void)
 {
-	extcon_dev_unregister(&hdcp_dev);
+	struct hdmitx_dev *hdev = get_hdmitx_device();
+
+	if (hdev)
+		cancel_delayed_work_sync(&hdev->work_do_hdcp);
 }
 
 
 MODULE_PARM_DESC(hdmi_authenticated, "\n hdmi_authenticated\n");
 module_param(hdmi_authenticated, int, 0444);
-
-MODULE_PARM_DESC(hdmi_hdcp_process, "\n hdmi_hdcp_process\n");
-module_param(hdmi_hdcp_process, int, 0664);
-
-MODULE_PARM_DESC(hdmi_output_force, "\n hdmi_output_force\n");
-module_param(hdmi_output_force, int, 0664);
-
 
 module_init(hdmitx_hdcp_init);
 module_exit(hdmitx_hdcp_exit);

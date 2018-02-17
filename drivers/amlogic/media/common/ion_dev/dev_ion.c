@@ -105,14 +105,25 @@ int meson_ion_share_fd_to_phys(struct ion_client *client,
 		int share_fd, ion_phys_addr_t *addr, size_t *len)
 {
 	struct ion_handle *handle = NULL;
+	int ret;
 
 	handle = ion_import_dma_buf_fd(client, share_fd);
 	if (IS_ERR_OR_NULL(handle)) {
-		dprintk(0, "EINVAL, client=%p, share_fd=%d\n",
-				client, share_fd);
+		/* pr_err("%s,EINVAL, client=%p, share_fd=%d\n",
+		 *	 __func__, client, share_fd);
+		 */
+		return PTR_ERR(handle);
 	}
 
-	return ion_phys(client, handle, addr, len);
+	ret = ion_phys(client, handle, addr, (size_t *)len);
+	pr_debug("ion_phys ret=%d, phys=0x%lx\n", ret, *addr);
+	ion_free(client, handle);
+	if (ret < 0) {
+		pr_err("ion_get_phys error, ret=%d\n", ret);
+		return ret;
+	}
+
+	return 0;
 }
 EXPORT_SYMBOL(meson_ion_share_fd_to_phys);
 
@@ -139,10 +150,12 @@ static int meson_ion_get_phys(
 
 	ret = ion_phys(client, handle, &addr, (size_t *)&len);
 	dprintk(1, "ret=%d, phys=0x%lX\n", ret, addr);
+	ion_free(client, handle);
 	if (ret < 0) {
 		dprintk(0, "meson_ion_get_phys error, ret=%d\n", ret);
 		return ret;
 	}
+
 	data.phys_addr = (unsigned int)addr;
 	data.size = (unsigned int)len;
 	if (copy_to_user((void __user *)arg, &data,
@@ -169,34 +182,72 @@ static long meson_custom_ioctl(
 int dev_ion_probe(struct platform_device *pdev)
 {
 	int err = 0;
+	int i;
 
 	my_ion_heap[num_heaps].type = ION_HEAP_TYPE_SYSTEM;
 	my_ion_heap[num_heaps].id = ION_HEAP_TYPE_SYSTEM;
 	my_ion_heap[num_heaps].name = "vmalloc_ion";
 	num_heaps++;
 
-#ifdef CONFIG_AMLOGIC_ION_CODEC_MM
 	my_ion_heap[num_heaps].type = ION_HEAP_TYPE_CUSTOM;
 	my_ion_heap[num_heaps].id = ION_HEAP_TYPE_CUSTOM;
 	my_ion_heap[num_heaps].name = "codec_mm_ion";
 	my_ion_heap[num_heaps].base = (ion_phys_addr_t) NULL;
-	my_ion_heap[num_heaps].size = 32 * 1024 * 1024;
+	/* limit the maximum alloc total size 80M */
+	my_ion_heap[num_heaps].size = 96 * 1024 * 1024;
 	num_heaps++;
-#endif
+
+	/*add CMA ion heap*/
+	my_ion_heap[num_heaps].type = ION_HEAP_TYPE_DMA;
+	my_ion_heap[num_heaps].id = ION_HEAP_TYPE_DMA;
+	my_ion_heap[num_heaps].name = "cma_ion";
+	my_ion_heap[num_heaps].priv = &pdev->dev;
+	num_heaps++;
+
 
 	/* init reserved memory */
 	err = of_reserved_mem_device_init(&pdev->dev);
 	if (err != 0)
 		dprintk(1, "failed get reserved memory\n");
+	heaps = kcalloc(num_heaps, sizeof(struct ion_heap *), GFP_KERNEL);
+	if (!heaps)
+		return -ENOMEM;
+	/* idev = ion_device_create(NULL); */
+	idev = ion_device_create(meson_custom_ioctl);
+	if (IS_ERR_OR_NULL(idev)) {
+		kfree(heaps);
+		panic(0);
+		return PTR_ERR(idev);
+	}
 
+	platform_set_drvdata(pdev, idev);
+
+	/* create the heaps as specified in the board file */
+	for (i = 0; i < num_heaps; i++) {
+		heaps[i] = ion_heap_create(&my_ion_heap[i]);
+		if (IS_ERR_OR_NULL(heaps[i])) {
+			err = PTR_ERR(heaps[i]);
+			goto failed;
+		}
+		ion_device_add_heap(idev, heaps[i]);
+		dprintk(2, "add heap type:%d id:%d\n",
+				my_ion_heap[i].type, my_ion_heap[i].id);
+	}
+
+	dprintk(1, "%s, create %d heaps\n", __func__, num_heaps);
 	return 0;
+failed:
+	dprintk(0, "ion heap create failed\n");
+	kfree(heaps);
+	heaps = NULL;
+	panic(0);
+	return err;
 }
 
 int dev_ion_remove(struct platform_device *pdev)
 {
 	struct ion_device *idev = platform_get_drvdata(pdev);
 	int i;
-
 	ion_device_destroy(idev);
 	for (i = 0; i < num_heaps; i++)
 		ion_heap_destroy(heaps[i]);
@@ -224,9 +275,6 @@ static struct platform_driver ion_driver = {
  */
 static int ion_dev_mem_init(struct reserved_mem *rmem, struct device *dev)
 {
-	int i = 0;
-	int err;
-	struct platform_device *pdev = to_platform_device(dev);
 
 	my_ion_heap[num_heaps].type = ION_HEAP_TYPE_CARVEOUT;
 	my_ion_heap[num_heaps].id = ION_HEAP_TYPE_CARVEOUT;
@@ -235,41 +283,10 @@ static int ion_dev_mem_init(struct reserved_mem *rmem, struct device *dev)
 	my_ion_heap[num_heaps].size = rmem->size;
 
 	pr_info("ion_dev_mem_init size=0x%llx\n", rmem->size);
-
 	num_heaps++;
-	heaps = kcalloc(num_heaps, sizeof(struct ion_heap *), GFP_KERNEL);
-	/* idev = ion_device_create(NULL); */
-	idev = ion_device_create(meson_custom_ioctl);
-	if (IS_ERR_OR_NULL(idev)) {
-		kfree(heaps);
-		panic(0);
-		return PTR_ERR(idev);
-	}
-
-	platform_set_drvdata(pdev, idev);
-
-	/* create the heaps as specified in the board file */
-	for (i = 0; i < num_heaps; i++) {
-		heaps[i] = ion_heap_create(&my_ion_heap[i]);
-		if (IS_ERR_OR_NULL(heaps[i])) {
-			err = PTR_ERR(heaps[i]);
-			goto failed;
-		}
-		ion_device_add_heap(idev, heaps[i]);
-		dprintk(2, "add heap type:%d id:%d\n",
-	 my_ion_heap[i].type, my_ion_heap[i].id);
-	}
-
-	dprintk(1, "%s, create %d heaps\n", __func__, num_heaps);
 
 	return 0;
 
-failed:
-	dprintk(0, "ion heap create failed\n");
-	kfree(heaps);
-	heaps = NULL;
-	panic(0);
-	return err;
 
 }
 

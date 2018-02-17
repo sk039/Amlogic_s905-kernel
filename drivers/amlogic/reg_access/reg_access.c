@@ -178,6 +178,7 @@ static const struct file_operations dump_file_ops = {
 	.read		= seq_read,
 	.write		= dump_write_file,
 	.llseek		= seq_lseek,
+	.release	= single_release,
 };
 static int __init aml_debug_init(void)
 {
@@ -189,9 +190,9 @@ static int __init aml_debug_init(void)
 	}
 	aml_dev.debugfs_reg_access = aml_reg_access;
 
-	debugfs_create_file("paddr", S_IFREG | 0444,
+	debugfs_create_file("paddr", S_IFREG | 0440,
 			    debugfs_root, &aml_dev, &paddr_file_ops);
-	debugfs_create_file("dump", S_IFREG | 0444,
+	debugfs_create_file("dump", S_IFREG | 0440,
 			    debugfs_root, &aml_dev, &dump_file_ops);
 	return 0;
 }

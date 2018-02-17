@@ -19,20 +19,39 @@
 #define _AML_CRYPTO_H_
 #include <linux/io.h>
 
-#define AML_CRYPTO_DEBUG    0
-
  /* Reserved 4096 bytes and table is 12 bytes each */
 #define MAX_NUM_TABLES 341
 
-#define DMA_T0   0x00
-#define DMA_T1   0x01
-#define DMA_T2   0x02
-#define DMA_T3   0x03
-#define DMA_STS0 0x04
-#define DMA_STS1 0x05
-#define DMA_STS2 0x06
-#define DMA_STS3 0x07
-#define DMA_CFG  0x08
+enum GXL_DMA_REG_OFFSETS {
+	GXL_DMA_T0   = 0x00,
+	GXL_DMA_T1   = 0x01,
+	GXL_DMA_T2   = 0x02,
+	GXL_DMA_T3   = 0x03,
+	GXL_DMA_STS0 = 0x04,
+	GXL_DMA_STS1 = 0x05,
+	GXL_DMA_STS2 = 0x06,
+	GXL_DMA_STS3 = 0x07,
+	GXL_DMA_CFG  = 0x08,
+};
+
+enum TXLX_DMA_REG_OFFSETS {
+	TXLX_DMA_T0   = 0x00,
+	TXLX_DMA_T1   = 0x01,
+	TXLX_DMA_T2   = 0x02,
+	TXLX_DMA_T3   = 0x03,
+	TXLX_DMA_T4   = 0x04,
+	TXLX_DMA_T5   = 0x05,
+
+	TXLX_DMA_STS0 = 0x08,
+	TXLX_DMA_STS1 = 0x09,
+	TXLX_DMA_STS2 = 0x0a,
+	TXLX_DMA_STS3 = 0x0b,
+	TXLX_DMA_STS4 = 0x0c,
+	TXLX_DMA_STS5 = 0x0d,
+
+	TXLX_DMA_CFG  = 0x10,
+	TXLX_DMA_SEC  = 0x11,
+};
 
 #define aml_write_reg(addr, data) \
 	writel(data, (int *)addr)
@@ -69,12 +88,6 @@
 #define MODE_TDES_2K 0xe
 #define MODE_TDES_3K 0xf
 
-/* Thread 2, 3 are for secure threads */
-#define AES_THREAD_INDEX 0
-#define TDES_THREAD_INDEX 0
-#define SHA_THREAD_INDEX 0
-#define HMAC_THREAD_INDEX 0
-
 struct dma_dsc {
 	union {
 		uint32_t d32;
@@ -97,11 +110,22 @@ struct dma_dsc {
 	uint32_t tgt_addr;
 };
 
-extern void __iomem *cryptoreg_offset;
-extern u32 secure_cryptoreg_offset;
+struct aml_dma_dev {
+	spinlock_t dma_lock;
+	uint32_t thread;
+	uint32_t status;
+	int	irq;
+	uint8_t dma_busy;
+};
 
 u32 swap_ulong32(u32 val);
 void aml_write_crypto_reg(u32 addr, u32 data);
 u32 aml_read_crypto_reg(u32 addr);
-void aml_dma_debug(struct dma_dsc *dsc, u32 nents, const char *msg);
+void aml_dma_debug(struct dma_dsc *dsc, u32 nents, const char *msg,
+		u32 thread, u32 status);
+
+u32 get_dma_t0_offset(void);
+u32 get_dma_sts0_offset(void);
+
+extern void __iomem *cryptoreg;
 #endif

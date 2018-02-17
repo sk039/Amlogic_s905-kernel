@@ -18,6 +18,7 @@
 #ifndef AMPORTS_CONFIG_HHH
 #define AMPORTS_CONFIG_HHH
 #include <linux/kconfig.h>
+#include <linux/amlogic/cpu_version.h>
 #include <linux/amlogic/media/old_cpu_version.h>
 
 /*
@@ -91,9 +92,11 @@ static inline bool has_vdec2(void)
 
 static inline bool has_hevc_vdec(void)
 {
-#ifndef CONFIG_AM_VDEC_H265
-	return 0;
-#endif
+/*
+ *#ifndef CONFIG_AM_VDEC_H265
+ *	return 0;
+ *#endif
+ */
 	/*only tvd not have hevc,when later than m8 */
 	if (is_meson_mtvd_cpu())
 		return 0;

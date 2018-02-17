@@ -169,14 +169,29 @@ loff_t efuse_llseek(struct file *filp, loff_t off, int whence)
 static long efuse_unlocked_ioctl(struct file *file, unsigned int cmd,
 	unsigned long arg)
 {
-	struct efusekey_info *info;
+	void __user	     *argp = (void __user *)arg;
+	struct efusekey_info info;
+	int		     ret;
+
 
 	switch (cmd) {
 	case EFUSE_INFO_GET:
-		info = (struct efusekey_info *)arg;
-		if (efuse_getinfo(info->keyname, info) < 0) {
-			pr_err("%s if not found\n", info->keyname);
+		ret = copy_from_user(&info, argp, sizeof(info));
+		if (ret != 0) {
+			pr_err("%s:%d,copy_from_user fail\n",
+				__func__, __LINE__);
+			return ret;
+		}
+		if (efuse_getinfo(info.keyname, &info) < 0) {
+			pr_err("%s if not found\n", info.keyname);
 			return -EFAULT;
+		}
+
+		ret = copy_to_user(argp, &info, sizeof(info));
+		if (ret != 0) {
+			pr_err("%s:%d,copy_to_user fail\n",
+				__func__, __LINE__);
+			return ret;
 		}
 		break;
 
@@ -294,6 +309,7 @@ ssize_t efuse_user_attr_store(char *name, const char *buf, size_t count)
 	const char *c, *s;
 	struct efusekey_info info;
 	unsigned int uint_val;
+	loff_t pos;
 
 	if (efuse_getinfo(name, &info) < 0) {
 		pr_err("%s is not found\n", name);
@@ -309,7 +325,7 @@ ssize_t efuse_user_attr_store(char *name, const char *buf, size_t count)
 	if (strstr(s, c) != NULL) {
 		for (i = 0; i < info.size; i++) {
 			uint_val = 0;
-			ret = kstrtouint(s, 0, &uint_val);
+			ret = sscanf(s, "%x", &uint_val);
 			if (ret < 0) {
 				pr_err("ERROR: efuse get user data fail!\n");
 				goto error_exit;
@@ -323,7 +339,8 @@ ssize_t efuse_user_attr_store(char *name, const char *buf, size_t count)
 		}
 	}
 
-	ret = efuse_write_usr(local_buf, info.size, (loff_t *)&(info.offset));
+	pos = ((loff_t)(info.offset)) & 0xffffffff;
+	ret = efuse_write_usr(local_buf, info.size, &pos);
 	if (ret == -1) {
 		pr_err("ERROR: efuse write user data fail!\n");
 		goto error_exit;
@@ -349,6 +366,7 @@ ssize_t efuse_user_attr_show(char *name, char *buf)
 	ssize_t ret;
 	int i;
 	struct efusekey_info info;
+	loff_t pos;
 
 	if (efuse_getinfo(name, &info) < 0) {
 		pr_err("%s is not found\n", name);
@@ -358,7 +376,8 @@ ssize_t efuse_user_attr_show(char *name, char *buf)
 	local_buf = kzalloc(sizeof(char)*(info.size), GFP_KERNEL);
 	memset(local_buf, 0, info.size);
 
-	ret = efuse_read_usr(local_buf, info.size, (loff_t *)&(info.offset));
+	pos = ((loff_t)(info.offset)) & 0xffffffff;
+	ret = efuse_read_usr(local_buf, info.size, &pos);
 	if (ret == -1) {
 		pr_err("ERROR: efuse read user data fail!\n");
 		goto error_exit;
@@ -384,7 +403,12 @@ static ssize_t userdata_show(struct class *cla,
 	loff_t offset;
 	unsigned int max_size;
 
-	max_size = efuse_get_max();
+	ret = efuse_get_max();
+	if (ret < 0) {
+		pr_err("efuse: failed to get max size\n");
+		return -1;
+	}
+	max_size = (unsigned int)ret;
 
 	op = kmalloc_array(max_size, sizeof(char), GFP_KERNEL);
 	if (!op) {
@@ -426,7 +450,13 @@ static ssize_t userdata_write(struct class *cla,
 	char *op = NULL;
 	unsigned int max_size;
 
-	max_size = efuse_get_max();
+	ret = efuse_get_max();
+	if (ret < 0) {
+		pr_err("efuse: failed to get max size\n");
+		return -1;
+	}
+	max_size = (unsigned int)ret;
+
 	op = kzalloc((sizeof(char)*max_size), GFP_KERNEL);
 	if (!op) {
 		pr_err("efuse: failed to allocate memory\n");

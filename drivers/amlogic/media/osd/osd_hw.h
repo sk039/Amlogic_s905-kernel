@@ -20,6 +20,8 @@
 
 #include <linux/amlogic/media/vout/vinfo.h>
 #include "osd.h"
+#include "osd_sync.h"
+#include "osd_drm.h"
 
 #define REG_OFFSET (0x20)
 #define OSD_RELATIVE_BITS 0x33330
@@ -112,6 +114,9 @@ extern void osd_pan_display_hw(u32 index, unsigned int xoffset,
 			       unsigned int yoffset);
 extern int osd_sync_request(u32 index, u32 yres, u32 xoffset, u32 yoffset,
 			    s32 in_fence_fd);
+extern int osd_sync_request_render(u32 index, u32 yres,
+	struct fb_sync_request_render_s *request,
+	u32 phys_addr);
 extern s32  osd_wait_vsync_event(void);
 #if defined(CONFIG_AMLOGIC_MEDIA_FB_OSD2_CURSOR)
 extern void osd_cursor_hw(u32 index, s16 x, s16 y, s16 xstart, s16 ystart,
@@ -121,7 +126,7 @@ extern void osd_init_scan_mode(void);
 extern void osd_suspend_hw(void);
 extern void osd_resume_hw(void);
 extern void osd_shutdown_hw(void);
-extern void osd_init_hw(u32 logo_loaded);
+extern void osd_init_hw(u32 logo_loaded, u32 osd_probe);
 extern void osd_init_scan_mode(void);
 extern void osd_set_logo_index(int index);
 extern int osd_get_logo_index(void);
@@ -145,4 +150,26 @@ extern void osd_switch_free_scale(
 	u32 next_index, u32 next_enable, u32 next_scale);
 extern void osd_get_urgent(u32 index, u32 *urgent);
 extern void osd_set_urgent(u32 index, u32 urgent);
+void osd_get_deband(u32 *osd_deband_enable);
+void osd_set_deband(u32 osd_deband_enable);
+void osd_get_fps(u32 *osd_fps);
+void osd_set_fps(u32 osd_fps_start);
+extern void osd_get_info(u32 index, u32 *addr, u32 *width, u32 *height);
+int logo_work_init(void);
+void set_logo_loaded(void);
+int set_osd_logo_freescaler(void);
+void osd_get_display_debug(u32 *osd_display_debug_enable);
+void osd_set_display_debug(u32 osd_display_debug_enable);
+void osd_backup_screen_info(
+	u32 index,
+	char __iomem *screen_base,
+	u32 screen_size);
+void osd_restore_screen_info(
+	u32 index,
+	char __iomem **screen_base,
+	unsigned long *screen_size);
+void osd_set_clear(u32 index, u32 osd_clear);
+void osd_page_flip(struct osd_plane_map_s *plane_map);
+void walk_through_update_list(void);
+
 #endif

@@ -71,6 +71,9 @@
 #include <linux/usb.h>
 #include <linux/usb/hcd.h>
 #include <linux/workqueue.h>
+#ifdef CONFIG_AMLOGIC_LEGACY_EARLY_SUSPEND
+#include <linux/amlogic/pm.h>
+#endif
 
 #define DWC_DRIVER_VERSION	"3.10a 12-MAY-2014"
 #define DWC_DRIVER_DESC		"HS OTG USB Controller driver"
@@ -235,8 +238,18 @@ bool force_device_mode;
 module_param_named(otg_device, force_device_mode,
 		bool, S_IRUGO | S_IWUSR);
 
-MODULE_PARM_DESC(otg_device, "set otg to force device mode" " ");
-
+static char otg_mode_string[2] = "0";
+static int __init force_otg_mode(char *s)
+{
+	if (s != NULL)
+		sprintf(otg_mode_string, "%s", s);
+	if (strcmp(otg_mode_string, "0") == 0)
+		force_device_mode = 0;
+	else
+		force_device_mode = 1;
+	return 0;
+}
+__setup("otg_device=", force_otg_mode);
 
 static u64 dwc2_dmamask = DMA_BIT_MASK(32);
 
@@ -873,7 +886,7 @@ static void dwc_otg_driver_shutdown(struct platform_device *pdev)
 #endif
 	return;
 }
-#ifdef CONFIG_HAS_EARLYSUSPEND
+#ifdef CONFIG_AMLOGIC_LEGACY_EARLY_SUSPEND
 extern int get_pcd_ums_state(dwc_otg_pcd_t *pcd);
 static void usb_early_suspend(struct early_suspend *h)
 {
@@ -882,19 +895,25 @@ static void usb_early_suspend(struct early_suspend *h)
 	dwc_otg_device = (dwc_otg_device_t *)h->param;
 	is_mount = get_pcd_ums_state(dwc_otg_device->pcd);
 	DWC_DEBUG("DWC_OTG: going early suspend! is_mount=%d\n", is_mount);
+	if (dwc_otg_device->core_if->controller_type == 0) {
 	if (dwc_otg_is_device_mode(dwc_otg_device->core_if) && !is_mount)
 		DWC_MODIFY_REG32(&dwc_otg_device->core_if->dev_if->dev_global_regs->dctl, 0, 2);
+	}
 }
 static void usb_early_resume(struct early_suspend *h)
 {
 	dwc_otg_device_t *dwc_otg_device;
 	DWC_DEBUG("DWC_OTG: going early resume\n");
 	dwc_otg_device = (dwc_otg_device_t *)h->param;
+	if (dwc_otg_device->core_if->controller_type == 0) {
 	if (dwc_otg_is_device_mode(dwc_otg_device->core_if))
 		DWC_MODIFY_REG32(&dwc_otg_device->core_if->dev_if->dev_global_regs->dctl, 2, 0);
+	}
 }
 #endif
 static const struct of_device_id dwc_otg_dt_match[] = {
+	{	.compatible	= "amlogic, dwc2",
+	},
 	{	.compatible	= "amlogic,dwc2",
 	},
 	{},
@@ -1185,11 +1204,13 @@ static int dwc_otg_driver_probe(struct platform_device *pdev)
 			dwc_otg_module_params.host_nperio_tx_fifo_size = -1;
 			dwc_otg_module_params.host_perio_tx_fifo_size = -1;
 			dwc_otg_module_params.host_channels = -1;
-			dwc_otg_module_params.dev_rx_fifo_size = 164;
-			dwc_otg_module_params.dev_nperio_tx_fifo_size = 144;
-			dwc_otg_module_params.dev_tx_fifo_size[0] = 144;
+			dwc_otg_module_params.dev_rx_fifo_size = 192;
+			dwc_otg_module_params.dev_nperio_tx_fifo_size = 128;
+			dwc_otg_module_params.dev_tx_fifo_size[0] = 128;
 			dwc_otg_module_params.dev_tx_fifo_size[1] = 128;
 			dwc_otg_module_params.dev_tx_fifo_size[2] = 128;
+			dwc_otg_module_params.dev_tx_fifo_size[3] = 16;
+			dwc_otg_module_params.dev_tx_fifo_size[4] = 16;
 		} else {
 			dwc_otg_module_params.data_fifo_size = -1;
 			dwc_otg_module_params.host_rx_fifo_size = -1;
@@ -1357,7 +1378,7 @@ static int dwc_otg_driver_probe(struct platform_device *pdev)
 	} else {
 		dwc_otg_enable_global_interrupts(dwc_otg_device->core_if);
 	}
-#ifdef CONFIG_HAS_EARLYSUSPEND
+#ifdef CONFIG_AMLOGIC_LEGACY_EARLY_SUSPEND
 	dwc_otg_device->usb_early_suspend.level = EARLY_SUSPEND_LEVEL_DISABLE_FB;
 	dwc_otg_device->usb_early_suspend.suspend = usb_early_suspend;
 	dwc_otg_device->usb_early_suspend.resume = usb_early_resume;
@@ -1436,6 +1457,9 @@ static const struct dev_pm_ops dwc2_dev_pm_ops = {
 #ifdef CONFIG_OF
 static const struct of_device_id of_dwc2_match[] = {
 	{
+		.compatible = "amlogic, dwc2"
+	},
+	{
 		.compatible = "amlogic,dwc2"
 	},
 	{ },
@@ -1454,7 +1478,12 @@ static struct platform_driver dwc_otg_driver = {
 	},
 };
 
-module_platform_driver(dwc_otg_driver);
+
+static int __init dwc_otg_init(void)
+{
+	return platform_driver_register(&dwc_otg_driver);
+}
+late_initcall(dwc_otg_init);
 
 MODULE_DESCRIPTION(DWC_DRIVER_DESC);
 MODULE_AUTHOR("Synopsys Inc.");

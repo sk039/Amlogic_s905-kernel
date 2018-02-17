@@ -2955,24 +2955,10 @@ intel_enable_sagv(struct drm_i915_private *dev_priv)
 	return 0;
 }
 
-static int
-intel_do_sagv_disable(struct drm_i915_private *dev_priv)
-{
-	int ret;
-	uint32_t temp = GEN9_SAGV_DISABLE;
-
-	ret = sandybridge_pcode_read(dev_priv, GEN9_PCODE_SAGV_CONTROL,
-				     &temp);
-	if (ret)
-		return ret;
-	else
-		return temp & GEN9_SAGV_IS_DISABLED;
-}
-
 int
 intel_disable_sagv(struct drm_i915_private *dev_priv)
 {
-	int ret, result;
+	int ret;
 
 	if (!intel_has_sagv(dev_priv))
 		return 0;
@@ -2984,25 +2970,23 @@ intel_disable_sagv(struct drm_i915_private *dev_priv)
 	mutex_lock(&dev_priv->rps.hw_lock);
 
 	/* bspec says to keep retrying for at least 1 ms */
-	ret = wait_for(result = intel_do_sagv_disable(dev_priv), 1);
+	ret = skl_pcode_request(dev_priv, GEN9_PCODE_SAGV_CONTROL,
+				GEN9_SAGV_DISABLE,
+				GEN9_SAGV_IS_DISABLED, GEN9_SAGV_IS_DISABLED,
+				1);
 	mutex_unlock(&dev_priv->rps.hw_lock);
-
-	if (ret == -ETIMEDOUT) {
-		DRM_ERROR("Request to disable SAGV timed out\n");
-		return -ETIMEDOUT;
-	}
 
 	/*
 	 * Some skl systems, pre-release machines in particular,
 	 * don't actually have an SAGV.
 	 */
-	if (IS_SKYLAKE(dev_priv) && result == -ENXIO) {
+	if (IS_SKYLAKE(dev_priv) && ret == -ENXIO) {
 		DRM_DEBUG_DRIVER("No SAGV found on system, ignoring\n");
 		dev_priv->sagv_status = I915_SAGV_NOT_CONTROLLED;
 		return 0;
-	} else if (result < 0) {
-		DRM_ERROR("Failed to disable the SAGV\n");
-		return result;
+	} else if (ret < 0) {
+		DRM_ERROR("Failed to disable the SAGV (%d)\n", ret);
+		return ret;
 	}
 
 	dev_priv->sagv_status = I915_SAGV_DISABLED;
@@ -4130,9 +4114,17 @@ skl_compute_wm(struct drm_atomic_state *state)
 	struct drm_crtc_state *cstate;
 	struct intel_atomic_state *intel_state = to_intel_atomic_state(state);
 	struct skl_wm_values *results = &intel_state->wm_results;
+	struct drm_device *dev = state->dev;
 	struct skl_pipe_wm *pipe_wm;
 	bool changed = false;
 	int ret, i;
+
+	/*
+	 * When we distrust bios wm we always need to recompute to set the
+	 * expected DDB allocations for each CRTC.
+	 */
+	if (to_i915(dev)->wm.distrust_bios_wm)
+		changed = true;
 
 	/*
 	 * If this transaction isn't actually touching any CRTC's, don't
@@ -4144,6 +4136,7 @@ skl_compute_wm(struct drm_atomic_state *state)
 	 */
 	for_each_crtc_in_state(state, crtc, cstate, i)
 		changed = true;
+
 	if (!changed)
 		return 0;
 
@@ -4919,6 +4912,12 @@ static void gen6_set_rps_thresholds(struct drm_i915_private *dev_priv, u8 val)
 		break;
 	}
 
+	/* When byt can survive without system hang with dynamic
+	 * sw freq adjustments, this restriction can be lifted.
+	 */
+	if (IS_VALLEYVIEW(dev_priv))
+		goto skip_hw_write;
+
 	I915_WRITE(GEN6_RP_UP_EI,
 		   GT_INTERVAL_FROM_US(dev_priv, ei_up));
 	I915_WRITE(GEN6_RP_UP_THRESHOLD,
@@ -4939,6 +4938,7 @@ static void gen6_set_rps_thresholds(struct drm_i915_private *dev_priv, u8 val)
 		   GEN6_RP_UP_BUSY_AVG |
 		   GEN6_RP_DOWN_IDLE_AVG);
 
+skip_hw_write:
 	dev_priv->rps.power = new_power;
 	dev_priv->rps.up_threshold = threshold_up;
 	dev_priv->rps.down_threshold = threshold_down;
@@ -4949,8 +4949,9 @@ static u32 gen6_rps_pm_mask(struct drm_i915_private *dev_priv, u8 val)
 {
 	u32 mask = 0;
 
+	/* We use UP_EI_EXPIRED interupts for both up/down in manual mode */
 	if (val > dev_priv->rps.min_freq_softlimit)
-		mask |= GEN6_PM_RP_DOWN_EI_EXPIRED | GEN6_PM_RP_DOWN_THRESHOLD | GEN6_PM_RP_DOWN_TIMEOUT;
+		mask |= GEN6_PM_RP_UP_EI_EXPIRED | GEN6_PM_RP_DOWN_THRESHOLD | GEN6_PM_RP_DOWN_TIMEOUT;
 	if (val < dev_priv->rps.max_freq_softlimit)
 		mask |= GEN6_PM_RP_UP_EI_EXPIRED | GEN6_PM_RP_UP_THRESHOLD;
 
@@ -5050,7 +5051,7 @@ void gen6_rps_busy(struct drm_i915_private *dev_priv)
 {
 	mutex_lock(&dev_priv->rps.hw_lock);
 	if (dev_priv->rps.enabled) {
-		if (dev_priv->pm_rps_events & (GEN6_PM_RP_DOWN_EI_EXPIRED | GEN6_PM_RP_UP_EI_EXPIRED))
+		if (dev_priv->pm_rps_events & GEN6_PM_RP_UP_EI_EXPIRED)
 			gen6_rps_reset_ei(dev_priv);
 		I915_WRITE(GEN6_PMINTRMSK,
 			   gen6_rps_pm_mask(dev_priv, dev_priv->rps.cur_freq));
@@ -7976,10 +7977,10 @@ static bool skl_pcode_try_request(struct drm_i915_private *dev_priv, u32 mbox,
  * @timeout_base_ms: timeout for polling with preemption enabled
  *
  * Keep resending the @request to @mbox until PCODE acknowledges it, PCODE
- * reports an error or an overall timeout of @timeout_base_ms+10 ms expires.
+ * reports an error or an overall timeout of @timeout_base_ms+50 ms expires.
  * The request is acknowledged once the PCODE reply dword equals @reply after
  * applying @reply_mask. Polling is first attempted with preemption enabled
- * for @timeout_base_ms and if this times out for another 10 ms with
+ * for @timeout_base_ms and if this times out for another 50 ms with
  * preemption disabled.
  *
  * Returns 0 on success, %-ETIMEDOUT in case of a timeout, <0 in case of some
@@ -8017,7 +8018,8 @@ int skl_pcode_request(struct drm_i915_private *dev_priv, u32 mbox, u32 request,
 	 * the poll with preemption disabled to maximize the number of
 	 * requests. Increase the timeout from @timeout_base_ms to 50ms to
 	 * account for interrupts that could reduce the number of these
-	 * requests.
+	 * requests, and for any quirks of the PCODE firmware that delays
+	 * the request completion.
 	 */
 	DRM_DEBUG_KMS("PCODE timeout, retrying with preemption disabled\n");
 	WARN_ON_ONCE(timeout_base_ms > 3);

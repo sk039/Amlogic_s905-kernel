@@ -27,6 +27,7 @@
 #include "sd_ops.h"
 
 #define DEFAULT_CMD6_TIMEOUT_MS	500
+#define AMLOGIC_HS400_TIMING 1
 
 static const unsigned int tran_exp[] = {
 	10000,		100000,		1000000,	10000000,
@@ -449,7 +450,7 @@ static int mmc_decode_ext_csd(struct mmc_card *card, u8 *ext_csd)
 				part_size = ext_csd[EXT_CSD_BOOT_MULT] << 17;
 				mmc_part_add(card, part_size,
 					EXT_CSD_PART_CONFIG_ACC_BOOT0 + idx,
-					"boot%d", idx, true,
+					"boot%d", idx, false,
 					MMC_BLK_DATA_AREA_BOOT);
 			}
 		}
@@ -617,6 +618,12 @@ static int mmc_decode_ext_csd(struct mmc_card *card, u8 *ext_csd)
 		card->ext_csd.ffu_capable =
 			(ext_csd[EXT_CSD_SUPPORTED_MODE] & 0x1) &&
 			!(ext_csd[EXT_CSD_FW_CONFIG] & 0x1);
+
+		card->ext_csd.pre_eol_info = ext_csd[EXT_CSD_PRE_EOL_INFO];
+		card->ext_csd.device_life_time_est_typ_a =
+			ext_csd[EXT_CSD_DEVICE_LIFE_TIME_EST_TYP_A];
+		card->ext_csd.device_life_time_est_typ_b =
+			ext_csd[EXT_CSD_DEVICE_LIFE_TIME_EST_TYP_B];
 	}
 out:
 	return err;
@@ -746,13 +753,18 @@ MMC_DEV_ATTR(manfid, "0x%06x\n", card->cid.manfid);
 MMC_DEV_ATTR(name, "%s\n", card->cid.prod_name);
 MMC_DEV_ATTR(oemid, "0x%04x\n", card->cid.oemid);
 MMC_DEV_ATTR(prv, "0x%x\n", card->cid.prv);
+MMC_DEV_ATTR(rev, "0x%x\n", card->ext_csd.rev);
+MMC_DEV_ATTR(pre_eol_info, "%02x\n", card->ext_csd.pre_eol_info);
+MMC_DEV_ATTR(life_time, "0x%02x 0x%02x\n",
+	card->ext_csd.device_life_time_est_typ_a,
+	card->ext_csd.device_life_time_est_typ_b);
 MMC_DEV_ATTR(serial, "0x%08x\n", card->cid.serial);
 MMC_DEV_ATTR(enhanced_area_offset, "%llu\n",
 		card->ext_csd.enhanced_area_offset);
 MMC_DEV_ATTR(enhanced_area_size, "%u\n", card->ext_csd.enhanced_area_size);
 MMC_DEV_ATTR(raw_rpmb_size_mult, "%#x\n", card->ext_csd.raw_rpmb_size_mult);
 MMC_DEV_ATTR(rel_sectors, "%#x\n", card->ext_csd.rel_sectors);
-MMC_DEV_ATTR(ocr, "%08x\n", card->ocr);
+MMC_DEV_ATTR(ocr, "0x%08x\n", card->ocr);
 
 static ssize_t mmc_fwrev_show(struct device *dev,
 			      struct device_attribute *attr,
@@ -799,6 +811,9 @@ static struct attribute *mmc_std_attrs[] = {
 	&dev_attr_name.attr,
 	&dev_attr_oemid.attr,
 	&dev_attr_prv.attr,
+	&dev_attr_rev.attr,
+	&dev_attr_pre_eol_info.attr,
+	&dev_attr_life_time.attr,
 	&dev_attr_serial.attr,
 	&dev_attr_enhanced_area_offset.attr,
 	&dev_attr_enhanced_area_size.attr,
@@ -1276,10 +1291,27 @@ out_err:
 	return err;
 }
 
+static void mmc_select_driver_type(struct mmc_card *card)
+{
+	int card_drv_type, drive_strength, drv_type;
+
+	card_drv_type = card->ext_csd.raw_driver_strength |
+			mmc_driver_type_mask(0);
+
+	drive_strength = mmc_select_drive_strength(card,
+						   card->ext_csd.hs200_max_dtr,
+						   card_drv_type, &drv_type);
+
+	card->drive_strength = drive_strength;
+
+	if (drv_type)
+		mmc_set_driver_type(card->host, drv_type);
+}
+
 static int mmc_select_hs400es(struct mmc_card *card)
 {
 	struct mmc_host *host = card->host;
-	int err = 0;
+	int err = -EINVAL;
 	u8 val;
 
 	if (!(host->caps & MMC_CAP_8_BIT_DATA)) {
@@ -1324,6 +1356,8 @@ static int mmc_select_hs400es(struct mmc_card *card)
 		goto out_err;
 	}
 
+	mmc_select_driver_type(card);
+
 	/* Switch card to HS400 */
 	val = EXT_CSD_TIMING_HS400 |
 	      card->drive_strength << EXT_CSD_DRV_STR_SHIFT;
@@ -1355,23 +1389,6 @@ out_err:
 	pr_err("%s: %s failed, error %d\n", mmc_hostname(card->host),
 	       __func__, err);
 	return err;
-}
-
-static void mmc_select_driver_type(struct mmc_card *card)
-{
-	int card_drv_type, drive_strength, drv_type;
-
-	card_drv_type = card->ext_csd.raw_driver_strength |
-			mmc_driver_type_mask(0);
-
-	drive_strength = mmc_select_drive_strength(card,
-						   card->ext_csd.hs200_max_dtr,
-						   card_drv_type, &drv_type);
-
-	card->drive_strength = drive_strength;
-
-	if (drv_type)
-		mmc_set_driver_type(card->host, drv_type);
 }
 
 /*
@@ -1486,7 +1503,23 @@ static int mmc_hs200_tuning(struct mmc_card *card)
 
 	return mmc_execute_tuning(card);
 }
+#ifdef AMLOGIC_HS400_TIMING
+static int mmc_hs400_timming(struct mmc_card *card)
+{
+	struct mmc_host *host = card->host;
+	int err = 0;
 
+	if ((card->mmc_avail_type & EXT_CSD_CARD_TYPE_HS400)
+			&&  (host->ops->post_hs400_timming)) {
+		err = host->ops->post_hs400_timming(host);
+		if (err)
+			pr_warn("%s: refix HS400 timming failed\n",
+				mmc_hostname(host));
+	}
+
+	return err;
+}
+#endif
 /*
  * Handle the detection and initialisation of a card.
  *
@@ -1635,6 +1668,20 @@ static int mmc_init_card(struct mmc_host *host, u32 ocr,
 		mmc_set_erase_size(card);
 	}
 
+#ifdef CONFIG_AMLOGIC_MMC
+	/* If emmc support HW reset so enable the function, when emmc
+	 * switch partition failed or programing stuck, can use this
+	 * function to reset emmc and reinitial.
+	 */
+
+	if (!card->ext_csd.rst_n_function
+			&& (host->caps & MMC_CAP_HW_RESET)) {
+		err = mmc_switch(card, EXT_CSD_CMD_SET_NORMAL,
+				EXT_CSD_RST_N_FUNCTION, 1,
+				card->ext_csd.generic_cmd6_time);
+	}
+#endif
+
 	/*
 	 * If enhanced_area_en is TRUE, host needs to enable ERASE_GRP_DEF
 	 * bit.  This bit will be lost every time after a reset or power off.
@@ -1714,10 +1761,15 @@ static int mmc_init_card(struct mmc_host *host, u32 ocr,
 		err = mmc_select_hs400(card);
 		if (err)
 			goto free_card;
-	} else if (mmc_card_hs(card)) {
+#ifdef AMLOGIC_HS400_TIMING
+		err = mmc_hs400_timming(card);
+		if (err)
+			goto err;
+#endif
+	} else if (!mmc_card_hs400es(card)) {
 		/* Select the desired bus width optionally */
 		err = mmc_select_bus_width(card);
-		if (err > 0) {
+		if (err > 0 && mmc_card_hs(card)) {
 			err = mmc_select_hs_ddr(card);
 			if (err)
 				goto free_card;
@@ -2012,7 +2064,11 @@ static int _mmc_resume(struct mmc_host *host)
 		goto out;
 
 	mmc_power_up(host, host->card->ocr);
+#ifdef CONFIG_AMLOGIC_MMC
+	mmc_hw_reset(host);
+#else
 	err = mmc_init_card(host, host->card->ocr, host->card);
+#endif
 	mmc_card_clr_suspended(host->card);
 
 out:
@@ -2046,8 +2102,21 @@ static int mmc_shutdown(struct mmc_host *host)
  */
 static int mmc_resume(struct mmc_host *host)
 {
+#ifdef CONFIG_AMLOGIC_MMC
+	int err = 0;
+
+	if (!(host->caps & MMC_CAP_RUNTIME_RESUME)) {
+		err = _mmc_resume(host);
+		pm_runtime_set_active(&host->card->dev);
+		pm_runtime_mark_last_busy(&host->card->dev);
+	}
+#endif
 	pm_runtime_enable(&host->card->dev);
+#ifdef CONFIG_AMLOGIC_MMC
+	return err;
+#else
 	return 0;
+#endif
 }
 
 /*
@@ -2074,6 +2143,11 @@ static int mmc_runtime_suspend(struct mmc_host *host)
 static int mmc_runtime_resume(struct mmc_host *host)
 {
 	int err;
+
+#ifdef CONFIG_AMLOGIC_MMC
+	if (!(host->caps & (MMC_CAP_AGGRESSIVE_PM | MMC_CAP_RUNTIME_RESUME)))
+		return 0;
+#endif
 
 	err = _mmc_resume(host);
 	if (err && err != -ENOMEDIUM)
@@ -2102,7 +2176,12 @@ static int mmc_reset(struct mmc_host *host)
 	 * In the case of recovery, we can't expect flushing the cache to work
 	 * always, but we have a go and ignore errors.
 	 */
+#ifdef CONFIG_AMLOGIC_MMC
+	if (!mmc_card_suspended(host->card))
+		mmc_flush_cache(host->card);
+#else
 	mmc_flush_cache(host->card);
+#endif
 
 	if ((host->caps & MMC_CAP_HW_RESET) && host->ops->hw_reset &&
 	     mmc_can_reset(card)) {

@@ -125,8 +125,24 @@ void remote_keydown(struct remote_dev *dev, int scancode, int status)
 				dev->cur_hardcode);
 	}
 	spin_lock_irqsave(&dev->keylock, flags);
+	/**
+	 *only a few keys which be set in key map table support
+	 *report relative axes event in mouse mode, other keys
+	 *will continue to report key event.
+	 */
+	if (status == REMOTE_NORMAL ||
+			status == REMOTE_REPEAT) {
+		/*to report relative axes event*/
+		if (dev->ir_report_rel(dev, scancode, status) == 0) {
+			spin_unlock_irqrestore(&dev->keylock, flags);
+			return;
+		}
+	}
+
 	if (status == REMOTE_NORMAL) {
 		keycode = dev->getkeycode(dev, scancode);
+		if (keycode == KEY_POWER)
+			pm_wakeup_event(dev->dev, 2000);
 		ir_do_keydown(dev, scancode, keycode);
 	}
 
@@ -183,8 +199,20 @@ int remote_register_device(struct remote_dev *dev)
 	}
 
 	__set_bit(EV_KEY, dev->input_device->evbit);
-	for (i = 0; i < KEY_MAX; i++)
+	for (i = KEY_RESERVED; i < BTN_MISC; i++)
 		__set_bit(i, dev->input_device->keybit);
+	for (i = KEY_OK; i < BTN_TRIGGER_HAPPY; i++)
+		__set_bit(i, dev->input_device->keybit);
+
+	__set_bit(BTN_MOUSE, dev->input_device->keybit);
+	__set_bit(BTN_LEFT, dev->input_device->keybit);
+	__set_bit(BTN_RIGHT, dev->input_device->keybit);
+	__set_bit(BTN_MIDDLE, dev->input_device->keybit);
+
+	__set_bit(EV_REL, dev->input_device->evbit);
+	__set_bit(REL_X, dev->input_device->relbit);
+	__set_bit(REL_Y, dev->input_device->relbit);
+	__set_bit(REL_WHEEL, dev->input_device->relbit);
 
 	dev->input_device->keycodesize = sizeof(unsigned short);
 	dev->input_device->keycodemax = 0x1ff;
@@ -217,4 +245,3 @@ EXPORT_SYMBOL(remote_unregister_device);
 MODULE_AUTHOR("AMLOGIC");
 MODULE_DESCRIPTION("Remote Driver");
 MODULE_LICENSE("GPL");
-

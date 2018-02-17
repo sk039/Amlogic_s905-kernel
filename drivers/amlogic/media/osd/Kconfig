@@ -9,7 +9,7 @@ config AMLOGIC_MEDIA_FB
 	select FB_CFB_FILLRECT
 	select FB_CFB_COPYAREA
 	select FB_CFB_IMAGEBLIT
-	depends on AMLOGIC_MEDIA_CANVAS
+#	depends on AMLOGIC_MEDIA_CANVAS
 #	depends on AMLOGIC_VOUT_SERVE
 	default n
 	help
@@ -19,13 +19,13 @@ config AMLOGIC_MEDIA_FB
 		It need enable canvas.
 		It need enable vout.
 
-config AMLOGIC_MEDIAFB_OSD_SYNC_FENCE
+config AMLOGIC_MEDIA_FB_OSD_SYNC_FENCE
 	bool "OSD SYNC FENCE"
 	default n
 	depends on AMLOGIC_MEDIA_FB
 	depends on STAGING
 	depends on ANDROID
-	depends on SYNC
+	depends on SYNC_FILE
 	depends on SW_SYNC
 	help
 		Select to enable OSD SYNC FENCE.

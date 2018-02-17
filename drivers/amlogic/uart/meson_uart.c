@@ -24,7 +24,6 @@
 #include <linux/kernel.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
-#include <linux/reset.h>
 #include <linux/serial.h>
 #include <linux/tty.h>
 #include <linux/tty_flip.h>
@@ -379,6 +378,7 @@ static void meson_transmit_chars(struct uart_port *port)
 	unsigned int ch;
 	int count = 256;
 
+	spin_lock(&port->lock);
 	if (port->x_char) {
 		writel(port->x_char, port->membase + AML_UART_WFIFO);
 		port->icount.tx++;
@@ -406,6 +406,7 @@ static void meson_transmit_chars(struct uart_port *port)
 		uart_write_wakeup(port);
 
  clear_and_return:
+	spin_unlock(&port->lock);
 	return;
 
 }
@@ -551,14 +552,15 @@ static void meson_uart_change_speed(struct uart_port *port, unsigned long baud)
 			dev_info(&pdev->dev, "ttyS%d use xtal(24M) %d change %ld to %ld\n",
 				port->line, port->uartclk,
 				mup->baud, baud);
-			val = (port->uartclk) / baud  - 1;
+			val = (port->uartclk + baud / 2) / baud  - 1;
 			val |= (AML_UART_BAUD_USE|AML_UART_BAUD_XTAL
 				|AML_UART_BAUD_XTAL_TICK);
 		} else {
 			dev_info(&pdev->dev, "ttyS%d use xtal(8M) %d change %ld to %ld\n",
 				port->line, port->uartclk,
 				mup->baud, baud);
-			val = (port->uartclk / 3) / baud  - 1;
+			val = ((port->uartclk / 3) + baud / 2) / baud  - 1;
+			val &= (~AML_UART_BAUD_XTAL_TICK);
 			val |= (AML_UART_BAUD_USE|AML_UART_BAUD_XTAL);
 		}
 	} else {
@@ -566,6 +568,7 @@ static void meson_uart_change_speed(struct uart_port *port, unsigned long baud)
 			port->line, port->uartclk,
 			mup->baud, baud);
 		val = ((port->uartclk * 10 / (baud * 4) + 5) / 10) - 1;
+		val &= (~(AML_UART_BAUD_XTAL|AML_UART_BAUD_XTAL_TICK));
 		val |= AML_UART_BAUD_USE;
 	}
 	writel(val, port->membase + AML_UART_REG5);
@@ -1039,9 +1042,8 @@ static int meson_uart_probe(struct platform_device *pdev)
 	struct resource *res_mem, *res_irq;
 	struct uart_port *port;
 	struct meson_uart_port *mup;
-	/*struct clk *clk;*/
+	struct clk *clk;
 	const void *prop;
-	struct reset_control *uart_rst;
 	int ret = 0;
 
 	if (pdev->dev.of_node)
@@ -1070,22 +1072,28 @@ static int meson_uart_probe(struct platform_device *pdev)
 
 	spin_lock_init(&mup->wr_lock);
 	port = &mup->port;
-#if 0
-	clk = clk_get(&pdev->dev, "clk_uart");
+#ifdef CONFIG_AMLOGIC_CLK
+	clk = devm_clk_get(&pdev->dev, "clk_gate");
 	if (IS_ERR(clk)) {
-		pr_err("%s: clock not found\n", dev_name(&pdev->dev));
+		pr_err("%s: clock gate not found\n", dev_name(&pdev->dev));
+		/* return PTR_ERR(clk); */
+	} else {
+		ret = clk_prepare_enable(clk);
+		if (ret) {
+			pr_err("uart: clock failed to prepare+enable: %d\n",
+				ret);
+			clk_put(clk);
+			/* return ret; */
+		}
+	}
+
+	clk = devm_clk_get(&pdev->dev, "clk_uart");
+	if (IS_ERR(clk)) {
+		pr_err("%s: clock source not found\n", dev_name(&pdev->dev));
 		/* return PTR_ERR(clk); */
 	}
-	ret = clk_prepare_enable(clk);
-	if (ret) {
-		pr_err("uart: clock failed to prepare+enable: %d\n", ret);
-		clk_put(clk);
-		/* return ret; */
-	}
+	port->uartclk = clk_get_rate(clk);
 #endif
-	uart_rst = devm_reset_control_get(&pdev->dev, NULL);
-	if (!IS_ERR(uart_rst))
-		reset_control_deassert(uart_rst);
 
 	port->fifosize = 64;
 	prop = of_get_property(pdev->dev.of_node, "fifosize", NULL);
@@ -1098,7 +1106,7 @@ static int meson_uart_probe(struct platform_device *pdev)
 			xtal_tick_en = of_read_ulong(prop, 1);
 	}
 	xtal_tick_en = 0;
-	port->uartclk = 24000000;
+
 	port->iotype = UPIO_MEM;
 	port->mapbase = res_mem->start;
 	port->irq = res_irq->start;
@@ -1144,11 +1152,14 @@ static int meson_uart_resume(struct platform_device *pdev)
 	u32 val;
 
 	port = platform_get_drvdata(pdev);
-	if (port) {
-		if (port->line == 0)
-			return 0;
-		uart_resume_port(&meson_uart_driver, port);
+	if (!port) {
+		dev_err(&pdev->dev, "port is NULL");
+		return 0;
 	}
+
+	if (port->line == 0)
+		return 0;
+	uart_resume_port(&meson_uart_driver, port);
 
 	val = readl(port->membase + AML_UART_CONTROL);
 	if (!(val & AML_UART_TWO_WIRE_EN)) {
@@ -1166,11 +1177,15 @@ static int meson_uart_suspend(struct platform_device *pdev,
 	u32 val;
 
 	port = platform_get_drvdata(pdev);
-	if (port) {
-		if (port->line == 0)
-			return 0;
-		uart_suspend_port(&meson_uart_driver, port);
+	if (!port) {
+		dev_err(&pdev->dev, "port is NULL");
+		return 0;
 	}
+
+	if (port->line == 0)
+		return 0;
+	uart_suspend_port(&meson_uart_driver, port);
+
 	val = readl(port->membase + AML_UART_CONTROL);
 	/* if rts/cts is open, pull up rts pin
 	 * when in suspend

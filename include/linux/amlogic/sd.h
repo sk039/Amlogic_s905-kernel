@@ -24,13 +24,15 @@
 #include <linux/clk-provider.h>
 #include <linux/mmc/host.h>
 /* #include <linux/earlysuspend.h> */
+#undef pr_fmt
+#define pr_fmt(fmt) "meson-mmc: " fmt
 
 #define	 AML_ERROR_RETRY_COUNTER		 10
 #define	 AML_TIMEOUT_RETRY_COUNTER	   2
 #define AML_CALIBRATION
-#define AML_SDHC_MAGIC			 "amlsdhc"
-#define AML_SDIO_MAGIC			 "amlsdio"
-#define AML_SD_EMMC_MAGIC			 "amlsd_emmc"
+#define AML_SDHC_MAGIC		"amlsdhc"
+#define AML_SDIO_MAGIC		"amlsdio"
+#define AML_SD_EMMC_MAGIC	"amlsd_emmc"
 #define SD_EMMC_MANUAL_CMD23
 #define MAX_TUNING_RETRY 4
 #define TUNING_NUM_PER_POINT 10
@@ -39,7 +41,7 @@
 #ifdef AML_CALIBRATION
 #define MAX_CALI_RETRY	3
 #define MAX_DELAY_CNT	16
-#define CALI_BLK_CNT	10
+#define CALI_BLK_CNT	80
 #endif
 
 #define SD_EMMC_CLOCK 0x0
@@ -54,6 +56,18 @@
 #define SD_EMMC_CMD_RSP1 0x60
 #define SD_EMMC_CMD_RSP2 0x64
 #define SD_EMMC_CMD_RSP3 0x68
+
+#define SD_EMMC_CLOCK_V3 0x0
+#define SD_EMMC_DELAY1_V3 0x4
+#define SD_EMMC_DELAY2_V3 0x8
+#define SD_EMMC_ADJUST_V3 0xc
+#define SD_EMMC_ADJ_IDX_LOG 0x20
+#define SD_EMMC_CLKTEST_LOG	0x24
+#define SD_EMMC_CLKTEST_OUT	0x28
+#define SD_EMMC_EYETEST_LOG	0x2C
+#define SD_EMMC_EYETEST_OUT0 0x30
+#define SD_EMMC_EYETEST_OUT1 0x34
+#define SD_EMMC_INTF3	0x38
 
 #define   CLK_DIV_SHIFT 0
 #define   CLK_DIV_WIDTH 6
@@ -145,6 +159,28 @@ struct cali_ctrl {
 	u8 max_index;
 };
 
+enum mmc_chip_e {
+	MMC_CHIP_M8B = 0x1B,
+	MMC_CHIP_GXBB = 0x1F,
+	MMC_CHIP_GXTVBB = 0x20,
+	MMC_CHIP_GXL = 0x21,
+	MMC_CHIP_GXM = 0x22,
+	MMC_CHIP_TXL = 0x23,
+	MMC_CHIP_TXLX = 0x24,
+	MMC_CHIP_AXG = 0x25,
+	MMC_CHIP_GXLX = 0x26,
+	MMC_CHIP_TXHD = 0x27,
+};
+
+struct meson_mmc_data {
+	enum mmc_chip_e chip_type;
+	unsigned int pinmux_base;
+	unsigned int clksrc_base;
+	unsigned int ds_pin_poll;
+	unsigned int ds_pin_poll_en;
+	unsigned int ds_pin_poll_bit;
+};
+
 struct amlsd_host;
 struct amlsd_platform {
 	struct amlsd_host *host;
@@ -159,6 +195,11 @@ struct amlsd_platform {
 #define	 PORT_SDHC_B	 4
 #define	 PORT_SDHC_C	 5
 
+#ifdef CONFIG_AMLOGIC_M8B_MMC
+	unsigned int width;
+	unsigned int tune_phase;	/* store tuning result */
+	struct delayed_work cd_detect;
+#endif
 	unsigned int caps;
 	unsigned int caps2;
 	unsigned int card_capacity;
@@ -179,6 +220,7 @@ struct amlsd_platform {
 	unsigned int irq_cd;
 	unsigned int gpio_cd;
 	unsigned int gpio_cd_level;
+	unsigned int gpio_cd_sta;
 	unsigned int gpio_power;
 	unsigned int power_level;
 	unsigned int auto_clk_close;
@@ -207,6 +249,12 @@ struct amlsd_platform {
 	unsigned char caling;
 	unsigned char calout[20][20];
 #endif
+	u64 align[10];
+	int base_line;
+	unsigned int count;
+	unsigned int delay_cell;
+	/* int order; */
+	unsigned int rx_err;
 	/* 0:unknown, 1:mmc card(include eMMC), 2:sd card(include tSD),
 	 * 3:sdio device(ie:sdio-wifi), 4:SD combo (IO+mem) card,
 	 * 5:NON sdio device(means sd/mmc card), other:reserved
@@ -281,6 +329,7 @@ struct amlsd_host {
 	struct amlsd_platform *pdata;
 	struct mmc_host		*mmc;
 	struct mmc_request	*request;
+	struct meson_mmc_data *data;
 
 	struct mmc_command	*cmd;
 	u32 ocr_mask;
@@ -291,11 +340,15 @@ struct amlsd_host {
 	unsigned long mux_parent_rate[MUX_CLK_NUM_PARENTS];
 	struct clk_divider cfg_div;
 	struct clk *cfg_div_clk;
+#ifdef CONFIG_AMLOGIC_M8B_MMC
+	struct clk *div3_clk;
+#endif
 
 	struct resource		*mem;
 	struct sd_emmc_regs *sd_emmc_regs;
 	void __iomem		*base;
 	void __iomem		*pinmux_base;
+	void __iomem		*clksrc_base;
 	int			dma;
 	char *bn_buf;
 	dma_addr_t		bn_dma_buf;
@@ -307,6 +360,7 @@ struct amlsd_host {
 	dma_addr_t		dma_gping; /* 0x400 */
 	dma_addr_t		dma_gpong; /* 0x800 */
 	char is_tunning;
+	char is_timming;
 	char tuning_mode;
 	unsigned int irq;
 	unsigned int irq_in;
@@ -317,6 +371,7 @@ struct amlsd_host {
 	int	sdio_irqen;
 	unsigned int error_bak;
 	struct delayed_work	timeout;
+	struct delayed_work	cd_work;
 	struct class debug;
 
 	unsigned int send;
@@ -329,6 +384,7 @@ struct amlsd_host {
 
 	unsigned long		clk_rate;
 
+	u8 *blk_test;
 	char *desc_buf;
 	dma_addr_t		desc_dma_addr;
 	unsigned int dma_sts;
@@ -385,6 +441,7 @@ struct amlsd_host {
 	int		 storage_flag;
 	/* bit[7-0]--minor version, bit[31-8]--major version */
 	int		 version;
+	int ctrl_ver;
 	unsigned long	clksrc_rate;
 	struct aml_emmc_adjust emmc_adj;
 	struct aml_emmc_rxclk emmc_rxclk;
@@ -1095,6 +1152,47 @@ struct sd_emmc_regs {
 	u32 gping[128]; /* 0x400 */
 	u32 gpong[128]; /* 0x800 */
 };
+struct sd_emmc_regs_v3 {
+	u32 gclock;	 /* 0x00 */
+	u32 gdelay1;	 /* 0x04 */
+	u32 gdelay2;/*0x08*/
+	u32 gadjust;	/* 0x0c */
+	u32 gcalout[4];	/* 0x10~0x1c */
+	u32 adj_idx_log;/*20*/
+	u32 clktest_log;/*0x24*/
+	u32 clktest_out;/*0x28*/
+	u32 eyetest_log;/*0x2c*/
+	u32 eyetest_out0;/*0x30*/
+	u32 eyetest_out1;/*0x34*/
+	u32 intf3;/*0x38*/
+	u32 reserved3c;/*0x3c*/
+	u32 gstart;	 /* 0x40 */
+	u32 gcfg;	   /* 0x44 */
+	u32 gstatus;	/* 0x48 */
+	u32 girq_en;	/* 0x4c */
+	u32 gcmd_cfg;   /* 0x50 */
+	u32 gcmd_arg;   /* 0x54 */
+	u32 gcmd_dat;   /* 0x58 */
+	u32 gcmd_rsp0;   /* 0x5c */
+	u32 gcmd_rsp1;  /* 0x60 */
+	u32 gcmd_rsp2;  /* 0x64 */
+	u32 gcmd_rsp3;  /* 0x68 */
+	u32 reserved_6c;	   /* 0x6c */
+	u32 gcurr_cfg;  /* 0x70 */
+	u32 gcurr_arg;  /* 0x74 */
+	u32 gcurr_dat;  /* 0x78 */
+	u32 gcurr_rsp;  /* 0x7c */
+	u32 gnext_cfg;  /* 0x80 */
+	u32 gnext_arg;  /* 0x84 */
+	u32 gnext_dat;  /* 0x88 */
+	u32 gnext_rsp;  /* 0x8c */
+	u32 grxd;	   /* 0x90 */
+	u32 gtxd;	   /* 0x94 */
+	u32 reserved_98[90];   /* 0x98~0x1fc */
+	u32 gdesc[128]; /* 0x200 */
+	u32 gping[128]; /* 0x400 */
+	u32 gpong[128]; /* 0x800 */
+};
 struct sd_emmc_clock {
 	/*[5:0]	 Clock divider.
 	 *Frequency = clock source/cfg_div, Maximum divider 63.
@@ -1133,6 +1231,44 @@ struct sd_emmc_clock {
 	u32 irq_sdio_sleep_ds:1;
 	u32 reserved27:5;
 };
+struct sd_emmc_clock_v3 {
+	/*[5:0]	 Clock divider.
+	 *Frequency = clock source/cfg_div, Maximum divider 63.
+	 */
+	u32 div:6;
+	/*[7:6]	 Clock source, 0: Crystal 24MHz, 1: Fix PLL, 850MHz*/
+	u32 src:2;
+	/*[9:8]	 Core clock phase. 0: 0 phase,
+	 *1: 90 phase, 2: 180 phase, 3: 270 phase.
+	 */
+	u32 core_phase:2;
+	/*[11:10]   TX clock phase. 0: 0 phase,
+	 *1: 90 phase, 2: 180 phase, 3: 270 phase.
+	 */
+	u32 tx_phase:2;
+	/*[13:12]   RX clock phase. 0: 0 phase,
+	 *1: 90 phase, 2: 180 phase, 3: 270 phase.
+	 */
+	u32 rx_phase:2;
+	u32 sram_pd:2;
+	/*[19:16]   TX clock delay line. 0: no delay,
+	 *n: delay n*200ps. Maximum delay 3ns.
+	 */
+	u32 tx_delay:6;
+	/*[23:20]   RX clock delay line. 0: no delay,
+	 *n: delay n*200ps. Maximum delay 3ns.
+	 */
+	u32 rx_delay:6;
+	/*[24]	  1: Keep clock always on.
+	 *0: Clock on/off controlled by activities.
+	 */
+	u32 always_on:1;
+	/*[25]	1: enable IRQ sdio when in sleep mode. */
+	u32 irq_sdio_sleep:1;
+	/*[26]	1: select DS as IRQ source during sleep.. */
+	u32 irq_sdio_sleep_ds:1;
+	u32 reserved31:1;
+};
 struct sd_emmc_delay {
 	u32 dat0:4;		 /*[3:0]	   Data 0 delay line. */
 	u32 dat1:4;		 /*[7:4]	   Data 1 delay line. */
@@ -1143,11 +1279,56 @@ struct sd_emmc_delay {
 	u32 dat6:4;		 /*[27:24]	 Data 6 delay line. */
 	u32 dat7:4;		 /*[31:28]	 Data 7 delay line. */
 };
+struct sd_emmc_delay1_v3 {
+	u32 dat0:6;		 /*[5:0]	   Data 0 delay line. */
+	u32 dat1:6;		 /*[11:6]	   Data 1 delay line. */
+	u32 dat2:6;		 /*[17:12]	  Data 2 delay line. */
+	u32 dat3:6;		 /*[23:18]	 Data 3 delay line. */
+	u32 dat4:6;		 /*[29:24]	 Data 4 delay line. */
+	u32 spare:2;		 /*[31:30]	 Data 5 delay line. */
+};
+struct sd_emmc_delay2_v3 {
+	u32 dat5:6;		 /*[5:0]	   Data 0 delay line. */
+	u32 dat6:6;		 /*[11:6]	   Data 1 delay line. */
+	u32 dat7:6;		 /*[17:12]	  Data 2 delay line. */
+	u32 dat8:6;		 /*[23:18]	 Data 3 delay line. */
+	u32 dat9:6;		 /*[29:24]	 Data 4 delay line. */
+	u32 spare:2;		 /*[31:30]	 Data 5 delay line. */
+};
 struct sd_emmc_adjust {
 	/*[3:0]	   Command delay line. */
 	u32 cmd_delay:4;
 	/*[7:4]	   DS delay line. */
 	u32 ds_delay:4;
+	/*[11:8]	  Select one signal to be tested.*/
+	u32 cali_sel:4;
+	/*[12]		Enable calibration. */
+	u32 cali_enable:1;
+	/*[13]	   Adjust interface timing
+	 *by resampling the input signals.
+	 */
+	u32 adj_enable:1;
+	/*[14]	   1: test the rising edge.
+	 *0: test the falling edge.
+	 */
+	u32 cali_rise:1;
+	/*[15]	   1: Sampling the DAT based on DS in HS400 mode.
+	 *0: Sampling the DAT based on RXCLK.
+	 */
+	u32 ds_enable:1;
+	/*[21:16]	   Resample the input signals
+	 *when clock index==adj_delay.
+	 */
+	u32 adj_delay:6;
+	/*[22]	   1: Use cali_dut first falling edge to adjust
+	 *	the timing, set cali_enable to 1 to use this function.
+	 *0: no use adj auto.
+	 */
+	u32 adj_auto:1;
+	u32 reserved22:9;
+};
+struct sd_emmc_adjust_v3 {
+	u32 reserved8:8;
 	/*[11:8]	  Select one signal to be tested.*/
 	u32 cali_sel:4;
 	/*[12]		Enable calibration. */
@@ -1189,6 +1370,39 @@ struct sd_emmc_calout {
 	u32 cali_setup:8;
 	u32 reserved16:16;
 };
+
+struct clktest_log {
+	u32 clktest_times:31;
+	u32 clktest_done:1;
+};
+
+struct clktest_out {
+	u32 clktest_out;
+};
+
+struct eyetest_log {
+	u32 eyetest_times:31;
+	u32 eyetest_done:1;
+};
+
+struct eyetest_out0 {
+	u32 eyetest_out0;
+};
+
+struct eyetest_out1 {
+	u32 eyetest_out1;
+};
+
+struct intf3 {
+	u32 clktest_exp:5;  /*[4:0]*/
+	u32 clktest_on_m:1; /*[5]*/
+	u32 eyetest_exp:5;  /*[10:6]*/
+	u32 eyetest_on:1;   /*[11]*/
+	u32 ds_sht_m:6;     /*[17:12]*/
+	u32 ds_sht_exp:4;   /*[21:18]*/
+	u32 sd_intf3:1;     /*[22]*/
+};
+
 struct sd_emmc_start {
 	/*[0]   1: Read descriptor from internal SRAM,
 	 *limited to 32 descriptors.
@@ -1371,10 +1585,12 @@ struct sd_emmc_desc_info {
 	u32 data_addr;
 	u32 resp_addr;
 };
+#define HHI_NAND_CLK_CNTL					0x97
 #define SD_EMMC_MAX_DESC_MUN					512
 #define SD_EMMC_REQ_DESC_MUN					4
 #define SD_EMMC_CLOCK_SRC_OSC				 0 /* 24MHz */
 #define SD_EMMC_CLOCK_SRC_FCLK_DIV2		   1 /* 1GHz */
+#define SD_EMMC_CLOCK_SRC_400MHZ			4
 #define SD_EMMC_CLOCK_SRC_MPLL				2 /* MPLL */
 #define SD_EMMC_CLOCK_SRC_DIFF_PLL			3
 #define SD_EMMC_IRQ_ALL					0x3fff
@@ -1402,8 +1618,6 @@ struct sd_emmc_desc_info {
 }
 /* #define DBG_LINE_INFO() */
 /* #define dev_err(a,s) pr_info(KERN_INFO s); */
-#define BOOT_POLL_UP_DOWN (0x3C << 2)
-#define BOOT_POLL_UP_DOWN_EN (0x4A << 2)
 
 #define AML_MMC_DISABLED_TIMEOUT	100
 #define AML_MMC_SLEEP_TIMEOUT		1000
@@ -1447,16 +1661,6 @@ extern struct mmc_host *sdio_host;
 #define POR_EMMC_BOOT()	(POR_BOOT_VALUE == 3)
 
 #define POR_CARD_BOOT() (POR_BOOT_VALUE == 0)
-
-#define print_tmp(fmt, args...) \
-{ \
-	pr_info("[%s] " fmt, __func__, ##args); \
-}
-
-#define print_dbg(fmt, args...) \
-{ \
-	pr_info("[%s] " fmt, __func__, ##args); \
-}
 
 /* for external codec status, if using external codec,
  *	jtag should not be set.
