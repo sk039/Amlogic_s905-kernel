@@ -1,9 +1,9 @@
-#dtb-$(CONFIG_ARM64) += kvim_android.dtb
-#dtb-$(CONFIG_ARM64) += kvim_linux.dtb
-#dtb-$(CONFIG_ARM64) += kvim_multios.dtb
-#dtb-$(CONFIG_ARM64) += kvim2_android.dtb
-#dtb-$(CONFIG_ARM64) += kvim2_linux.dtb
-#dtb-$(CONFIG_ARM64) += kvim2_multios.dtb
+dtb-$(CONFIG_ARM64) += kvim_android.dtb
+dtb-$(CONFIG_ARM64) += kvim_linux.dtb
+dtb-$(CONFIG_ARM64) += kvim_multios.dtb
+dtb-$(CONFIG_ARM64) += kvim2_android.dtb
+dtb-$(CONFIG_ARM64) += kvim2_linux.dtb
+dtb-$(CONFIG_ARM64) += kvim2_multios.dtb
 #dtb-$(CONFIG_ARM64) += kvim2_volumio.dtb
 dtb-$(CONFIG_ARM64) += gxl_p212_1g.dtb
 dtb-$(CONFIG_ARM64) += gxl_p212_2g.dtb
