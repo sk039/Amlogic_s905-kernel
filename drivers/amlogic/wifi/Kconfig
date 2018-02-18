@@ -19,6 +19,6 @@ config BCMDHD_USE_STATIC_BUF
 #	depends on AMLOGIC_WIFI
 #	default m
 
-#source "drivers/amlogic/wifi/bcmdhd/Kconfig"
+source "drivers/amlogic/wifi/bcmdhd/Kconfig"
 
 endif # AMLOGIC_WIFI
