@@ -15,8 +15,21 @@
 #include <linux/mmc/sdio_func.h>
 #endif /* defined(BUS_POWER_RESTORE) && defined(BCMSDIO) */
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 8, 0))
+#include <linux/amlogic/aml_gpio_consumer.h>
+extern int wifi_irq_trigger_level(void);
+#endif
+#ifdef CUSTOMER_HW_AMLOGIC
+extern  void sdio_reinit(void);
+extern void extern_wifi_set_enable(int is_on);
+extern void pci_remove_reinit(unsigned int vid, unsigned int pid, int delBus);
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 14, 0))
+extern int wifi_irq_num(void);
+#endif
+#endif
+
+extern u8 *wifi_get_mac(void);
 #ifdef CONFIG_DHD_USE_STATIC_BUF
-extern void *bcmdhd_mem_prealloc(int section, unsigned long size);
 #endif /* CONFIG_DHD_USE_STATIC_BUF */
 
 static int gpio_wl_reg_on = -1; // WL_REG_ON is input pin of WLAN module
@@ -24,21 +37,8 @@ static int gpio_wl_reg_on = -1; // WL_REG_ON is input pin of WLAN module
 static int gpio_wl_host_wake = -1; // WL_HOST_WAKE is output pin of WLAN module
 #endif
 
-#ifdef CUSTOMER_HW_AMLOGIC
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 8, 0))
-#include <linux/amlogic/aml_gpio_consumer.h>
-extern int wifi_irq_trigger_level(void);
-extern u8 *wifi_get_mac(void);
-#endif
-extern  void sdio_reinit(void);
-extern void extern_wifi_set_enable(int is_on);
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 14, 0))
-extern int wifi_irq_num(void);
-#endif
-#endif
-
 static int
-dhd_wlan_set_power(int on
+dhd_wlan_set_power(bool on
 #ifdef BUS_POWER_RESTORE
 , wifi_adapter_info_t *adapter
 #endif /* BUS_POWER_RESTORE */
@@ -56,11 +56,13 @@ dhd_wlan_set_power(int on
 			}
 		}
 #ifdef CUSTOMER_HW_AMLOGIC
+#ifdef BCMSDIO
 		extern_wifi_set_enable(0);
 		mdelay(200);
 		extern_wifi_set_enable(1);
 		mdelay(200);
 //		sdio_reinit();
+#endif
 #endif
 #if defined(BUS_POWER_RESTORE)
 #if defined(BCMSDIO)
@@ -125,7 +127,7 @@ static int dhd_wlan_set_reset(int onoff)
 	return 0;
 }
 
-static int dhd_wlan_set_carddetect(int present)
+static int dhd_wlan_set_carddetect(bool present)
 {
 	int err = 0;
 
@@ -139,8 +141,6 @@ static int dhd_wlan_set_carddetect(int present)
 #ifdef CUSTOMER_HW_AMLOGIC
 		sdio_reinit();
 #endif
-#elif defined(BCMPCIE)
-		printf("======== Card detection to detect PCIE card! ========\n");
 #endif
 	} else {
 #if defined(BCMSDIO)
@@ -154,6 +154,8 @@ static int dhd_wlan_set_carddetect(int present)
 #endif
 #elif defined(BCMPCIE)
 		printf("======== Card detection to remove PCIE card! ========\n");
+		extern_wifi_set_enable(0);
+		mdelay(200);
 #endif
 	}
 #endif /* BUS_POWER_RESTORE */
@@ -173,40 +175,49 @@ static int dhd_wlan_get_mac_addr(unsigned char *buf)
 		bcopy((char *)&ea_example, buf, sizeof(struct ether_addr));
 	}
 #endif /* EXAMPLE_GET_MAC */
-#ifdef EXAMPLE_GET_MAC_VER2
-	/* EXAMPLE code */
-	{
-		char mac[6] = {0x00,0x11,0x22,0x33,0x44,0xFF};
-		char macpad[56]= {
-		0x00,0xaa,0x9c,0x84,0xc7,0xbc,0x9b,0xf6,
-		0x02,0x33,0xa9,0x4d,0x5c,0xb4,0x0a,0x5d,
-		0xa8,0xef,0xb0,0xcf,0x8e,0xbf,0x24,0x8a,
-		0x87,0x0f,0x6f,0x0d,0xeb,0x83,0x6a,0x70,
-		0x4a,0xeb,0xf6,0xe6,0x3c,0xe7,0x5f,0xfc,
-		0x0e,0xa7,0xb3,0x0f,0x00,0xe4,0x4a,0xaf,
-		0x87,0x08,0x16,0x6d,0x3a,0xe3,0xc7,0x80};
-		bcopy(mac, buf, sizeof(mac));
-		bcopy(macpad, buf+6, sizeof(macpad));
+	bcopy((char *)wifi_get_mac(), buf, sizeof(struct ether_addr));
+	if (buf[0] == 0xff) {
+		printf("custom wifi mac is not set\n");
+		err = -1;
 	}
-#endif /* EXAMPLE_GET_MAC_VER2 */
 
 	return err;
 }
+#ifdef CONFIG_DHD_USE_STATIC_BUF
+extern void *bcmdhd_mem_prealloc(int section, unsigned long size);
+void* bcm_wlan_prealloc(int section, unsigned long size)
+{
+	void *alloc_ptr = NULL;
+	alloc_ptr = bcmdhd_mem_prealloc(section, size);
+	if (alloc_ptr) {
+		printf("success alloc section %d, size %ld\n", section, size);
+		if (size != 0L)
+			bzero(alloc_ptr, size);
+		return alloc_ptr;
+	}
+	printf("can't alloc section %d\n", section);
+	return NULL;
+}
+#endif
+
+#if !defined(WL_WIRELESS_EXT)
+struct cntry_locales_custom {
+	char iso_abbrev[WLC_CNTRY_BUF_SZ];	/* ISO 3166-1 country abbreviation */
+	char custom_locale[WLC_CNTRY_BUF_SZ];	/* Custom firmware locale */
+	int32 custom_locale_rev;		/* Custom local revisin default -1 */
+};
+#endif
 
 static struct cntry_locales_custom brcm_wlan_translate_custom_table[] = {
 	/* Table should be filled out based on custom platform regulatory requirement */
-#ifdef EXAMPLE_TABLE
 	{"",   "XT", 49},  /* Universal if Country code is unknown or empty */
 	{"US", "US", 0},
-#endif /* EXMAPLE_TABLE */
 };
 
 #ifdef CUSTOM_FORCE_NODFS_FLAG
 struct cntry_locales_custom brcm_wlan_translate_nodfs_table[] = {
-#ifdef EXAMPLE_TABLE
 	{"",   "XT", 50},  /* Universal if Country code is unknown or empty */
 	{"US", "US", 0},
-#endif /* EXMAPLE_TABLE */
 };
 #endif
 
@@ -257,7 +268,7 @@ struct wifi_platform_data dhd_wlan_control = {
 	.set_carddetect	= dhd_wlan_set_carddetect,
 	.get_mac_addr	= dhd_wlan_get_mac_addr,
 #ifdef CONFIG_DHD_USE_STATIC_BUF
-	.mem_prealloc	= bcmdhd_mem_prealloc,
+	.mem_prealloc	= bcm_wlan_prealloc,
 #endif /* CONFIG_DHD_USE_STATIC_BUF */
 	.get_country_code = dhd_wlan_get_country_code,
 };
@@ -278,6 +289,10 @@ int dhd_wlan_init_gpio(void)
 	gpio_wl_host_wake = -1;
 #endif
 
+#if defined(BCMPCIE)
+	printf("======== Card detection to detect PCIE card! ========\n");
+	pci_remove_reinit(0x14e4, 0x43ec, 1);
+#endif
 	printf("%s: GPIO(WL_REG_ON) = %d\n", __FUNCTION__, gpio_wl_reg_on);
 	if (gpio_wl_reg_on >= 0) {
 		err = gpio_request(gpio_wl_reg_on, "WL_REG_ON");

@@ -2,8 +2,6 @@ comment "Amlogic Wifi Driver"
 
 menuconfig AMLOGIC_WIFI
 	boolean "WiFi support"
-	select WIRELESS_EXT
-	select WEXT_PRIV
 	default n
 	help
 		select y to support wifi
@@ -14,10 +12,10 @@ config BCMDHD_USE_STATIC_BUF
 	depends on AMLOGIC_WIFI
 	default n
 
-#config AMLOGIC_WIFI_DUMMY
-#	tristate "Amlogic SDIO WiFi turn on and rescan module"
-#	depends on AMLOGIC_WIFI
-#	default m
+config AMLOGIC_WIFI_DUMMY
+	tristate "Amlogic SDIO WiFi turn on and rescan module"
+	depends on AMLOGIC_WIFI
+	default m
 
 source "drivers/amlogic/wifi/bcmdhd/Kconfig"
 

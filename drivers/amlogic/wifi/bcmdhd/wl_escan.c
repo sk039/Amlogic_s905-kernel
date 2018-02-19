@@ -4,12 +4,10 @@
 #include <typedefs.h>
 #include <linuxver.h>
 #include <osl.h>
-#include <dngl_stats.h>
-#include <dhd.h>
 
 #include <bcmutils.h>
 #include <bcmendian.h>
-#include <ethernet.h>
+#include <proto/ethernet.h>
 
 #include <linux/if_arp.h>
 #include <asm/uaccess.h>
@@ -1396,7 +1394,7 @@ err:
 	return err;
 }
 
-void wl_escan_detach(dhd_pub_t *dhdp)
+void wl_escan_detach(void)
 {
 	struct wl_escan_info *escan = g_escan;
 
@@ -1413,12 +1411,13 @@ void wl_escan_detach(dhd_pub_t *dhdp)
 		kfree(escan->escan_ioctl_buf);
 		escan->escan_ioctl_buf = NULL;
 	}
-	DHD_OS_PREFREE(dhdp, escan, sizeof(struct wl_escan_info));
+
+	kfree(escan);
 	g_escan = NULL;
 }
 
 int
-wl_escan_attach(struct net_device *dev, dhd_pub_t *dhdp)
+wl_escan_attach(struct net_device *dev, void * dhdp)
 {
 	struct wl_escan_info *escan = NULL;
 
@@ -1426,7 +1425,8 @@ wl_escan_attach(struct net_device *dev, dhd_pub_t *dhdp)
 
 	if (!dev)
 		return 0;
-	escan = (wl_escan_info_t *)DHD_OS_PREALLOC(dhdp, DHD_PREALLOC_WL_ESCAN_INFO, sizeof(struct wl_escan_info));
+
+	escan = kmalloc(sizeof(struct wl_escan_info), GFP_KERNEL);
 	if (!escan)
 		return -ENOMEM;
 	memset(escan, 0, sizeof(struct wl_escan_info));
@@ -1449,7 +1449,7 @@ wl_escan_attach(struct net_device *dev, dhd_pub_t *dhdp)
 
 	return 0;
 err:
-	wl_escan_detach(dhdp);
+	wl_escan_detach();
 	return -ENOMEM;
 }
 

@@ -7,13 +7,14 @@ config BCMDHD
 config BCMDHD_FW_PATH
 	depends on BCMDHD
 	string "Firmware path"
-	default "/vendor/etc/wifi/4356/fw_bcm4356a2_ag.bin"
+	default "/system/etc/firmware/fw_bcmdhd.bin"
 	---help---
 	  Path to the firmware file.
 
 config BCMDHD_NVRAM_PATH
+	depends on BCMDHD
 	string "NVRAM path"
-	default "/vendor/etc/wifi/4356/nvram_ap6356.txt"
+	default "/system/etc/firmware/nvram.txt"
 	---help---
 	  Path to the calibration file.
 
