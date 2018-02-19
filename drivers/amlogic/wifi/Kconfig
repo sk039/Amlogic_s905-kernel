@@ -2,6 +2,8 @@ comment "Amlogic Wifi Driver"
 
 menuconfig AMLOGIC_WIFI
 	boolean "WiFi support"
+	select WIRELESS_EXT
+	select WEXT_PRIV
 	default n
 	help
 		select y to support wifi
